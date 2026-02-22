@@ -1,7 +1,6 @@
 """
-CodeRL+ (Variable-Level Execution Trajectories)
-Reward = State-Diff + Pass/Fail.
-Validates execution intermediate variables against expected targets.
+CodeRL+ (Plan §2.7): Variable-Level Execution Trajectories, Reward = Pass/Fail + Semantics-Match.
+Wird in rl_train.grpo_train_step genutzt, wenn RL-JSONL reference_solution/target_code enthält.
 """
 
 import ast
@@ -28,9 +27,7 @@ def execute_and_extract_variables(code: str):
         return False, {"error": str(e)}
 
 def compute_semantics_reward(pred_code: str, target_code: str) -> float:
-    """
-    CodeRL+ Reward function combining execution success + variable state diff match.
-    """
+    """CodeRL+ Reward: Execution-Pass + strukturelle Variable-Überlappung (Stub für State-Diff)."""
     pred_pass, pred_vars = execute_and_extract_variables(pred_code)
     tgt_pass, tgt_vars = execute_and_extract_variables(target_code)
     

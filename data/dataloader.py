@@ -47,13 +47,6 @@ def load_tokenizer_for_training(
             return Wrapper()
         except Exception:
             pass
-    # 3) Fallback: HF code tokenizer
-    try:
-        from transformers import AutoTokenizer
-        t = AutoTokenizer.from_pretrained("bigcode/starcoder2-3b", trust_remote_code=True)
-        return t
-    except Exception:
-        pass
     raise FileNotFoundError(
         "No tokenizer found. Train with: python data/tokenizer_train.py --input data/processed/stage1.jsonl --output data/tokenizer"
     )
@@ -106,6 +99,7 @@ class CodeDataLoader:
         shuffle: bool = True,
         seed: Optional[int] = None,
         stage_files: Optional[list[str]] = None,
+        pin_memory: bool = False,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.tokenizer = tokenizer
@@ -115,6 +109,7 @@ class CodeDataLoader:
         self.shuffle = shuffle
         self.seed = seed
         self.stage_files = stage_files or ["stage1.jsonl", "stage2.jsonl", "stage3.jsonl", "train.jsonl"]
+        self.pin_memory = pin_memory  # RTX 3090: async CPU→GPU mit non_blocking=True
 
     def _collect_chunks(self) -> list[list[int]]:
         chunks: list[list[int]] = []
@@ -150,6 +145,8 @@ class CodeDataLoader:
                 c = c + [pad_id] * (max_len - len(c))
                 padded.append(c)
             input_ids = torch.tensor(padded, dtype=torch.long)
+            if self.pin_memory:
+                input_ids = input_ids.pin_memory()
             yield {"input_ids": input_ids}
 
     def __iter__(self) -> Iterator[dict[str, torch.Tensor]]:
@@ -174,8 +171,9 @@ def get_training_dataloader(
     seq_len: int = 512,
     batch_size: int = 4,
     seed: Optional[int] = None,
+    pin_memory: bool = False,
 ) -> Optional[CodeDataLoader]:
-    """Build dataloader if data_dir has JSONL and tokenizer exists; else None."""
+    """Build dataloader if data_dir has JSONL and tokenizer exists. pin_memory=True für CUDA (RTX 3090)."""
     data_dir = Path(data_dir)
     if not data_dir.exists():
         return None
@@ -193,4 +191,5 @@ def get_training_dataloader(
         batch_size=batch_size,
         shuffle=True,
         seed=seed,
+        pin_memory=pin_memory,
     )

@@ -34,9 +34,9 @@ try:
     if "stages" not in cfg:
         raise AssertionError("config_data.yaml must have 'stages'")
     # stage_stream with minimal stream
-    def dummy_stream():
+    def sample_stream():
         yield {"content": "x" * 150, "license": "mit"}
-    list(stage_stream("stage1", cfg, dummy_stream()))
+    list(stage_stream("stage1", cfg, sample_stream()))
     ok("prepare_data: load_config, stage_stream")
 except Exception as e:
     fail("prepare_data", e)
@@ -276,6 +276,54 @@ if (ROOT / "colab_train.ipynb").exists():
     ok("colab_train.ipynb exists")
 else:
     fail("colab_train.ipynb", FileNotFoundError("missing"))
+
+# --- 8. INSTRUCTION SFT + RL (Plan Extension) ---
+print("\n[8] INSTRUCTION SFT + RL")
+try:
+    from data.chat_format import format_chat_message, parse_chat_to_message_spans
+    formatted = format_chat_message("user", "test")
+    assert "<|im_start|>" in formatted
+    ok("chat_format")
+except Exception as e:
+    fail("chat_format", e)
+
+try:
+    from data.instruction_data import evolve_instruction
+    # Non-crashing validation
+    ok("instruction_data")
+except Exception as e:
+    fail("instruction_data", e)
+
+try:
+    from data.sft_dataloader import get_sft_dataloader
+    ok("sft_dataloader")
+except Exception as e:
+    fail("sft_dataloader", e)
+
+try:
+    from training.sft_train import run_sft_training
+    ok("sft_train")
+except Exception as e:
+    fail("sft_train", e)
+
+try:
+    from post_training.execution_reward import compute_execution_reward
+    assert compute_execution_reward("def f(): pass") >= -0.5
+    ok("execution_reward")
+except Exception as e:
+    fail("execution_reward", e)
+
+try:
+    from training.rl_train import run_rl_training, generate_candidates
+    ok("rl_train")
+except Exception as e:
+    fail("rl_train", e)
+
+try:
+    from inference.run_chat import chat_loop
+    ok("run_chat")
+except Exception as e:
+    fail("run_chat", e)
 
 # --- Summary ---
 print("\n" + "=" * 50)

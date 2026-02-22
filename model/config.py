@@ -21,13 +21,14 @@ class ModelConfig:
     vocab_size: int = 16384
     max_seq_len: int = 1024
 
-    # Architecture
-    use_bitnet: bool = False
-    use_mamba_hybrid: bool = False
+    # Architecture (Plan §2: Giant-Killer – alle Säulen konfigurierbar)
+    use_bitnet: bool = False   # BitLinear b1.58
+    use_mamba_hybrid: bool = False  # 43% Mamba, 7% Attn, 50% MLP
+    use_blt: bool = False       # Byte Latent Transformer: byte input, 256 vocab head
+    use_leam: bool = False      # LEAM++ grammar constrainer in Inferenz (run_chat/run_torch)
     mamba_ratio: float = 0.43
     attention_ratio: float = 0.07
     mlp_ratio: float = 0.50
-    use_leam: bool = False
     use_masa: bool = False
     use_mohd: bool = False
 

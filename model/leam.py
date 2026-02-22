@@ -20,17 +20,15 @@ class ASTMetadataEmbedding(nn.Module):
 
 class LEAMGrammarConstrainer:
     """
-    LEAM++ Inference Grammar Guard.
-    Dynamically prunes next-token logits that violently violate Python syntax,
-    utilizing incremental speculative AST parsing.
+    LEAM++ (Plan §2): Grammar-Guard in der Inferenz.
+    Wird in run_chat.py / run_torch.py verwendet, wenn config.use_leam True.
+    Maskiert Next-Token-Logits, die zu sofortigem Python-SyntaxError führen.
     """
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
-        
+
     def constrain_logits(self, current_sequence_ids: List[int], logits: torch.Tensor) -> torch.Tensor:
-        """
-        Applies a massive negative mask to logits that demonstrably break the syntax tree.
-        """
+        """Logits shape (1, vocab_size); top-k Kandidaten werden per ast.parse geprüft, Verstöße auf -1e9 gesetzt."""
         if not self.tokenizer:
             return logits
 

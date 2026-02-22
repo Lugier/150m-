@@ -36,10 +36,7 @@ def distill_trajectories(teacher_file: str, student_dataset: str):
     (with green tests) for the student to distill.
     """
     if not os.path.exists(teacher_file):
-        print(f"Teacher file {teacher_file} missing. Creating dummy to demonstrate pipeline.")
-        with open(teacher_file, 'w') as f:
-            f.write(json.dumps({"problem": "add", "trajectory": ["def add(): pass", "def add(a,b): return a+b"], "final_status": "green"}) + "\n")
-            f.write(json.dumps({"problem": "sub", "trajectory": ["def sub(): pass"], "final_status": "red"}) + "\n")
+        raise FileNotFoundError(f"Teacher file not found: {teacher_file}. Provide teacher trajectory JSONL (e.g. from CodeRL+ rollouts).")
 
     clean_trajectories = []
     with open(teacher_file, 'r') as f:

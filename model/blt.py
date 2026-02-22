@@ -1,7 +1,7 @@
 """
-BLT (Byte Latent Transformer) – verbindliche Repräsentation.
-Tokenizer-frei; dynamische Byte-Patches nach Entropie.
-Real implementation logic for entropy-based sequence packing.
+BLT (Byte Latent Transformer, Plan §2): tokenizer-freie Byte-Repräsentation.
+In gpt.py bei use_blt: Embed = BytePatchEncoder(256), LM-Head = BytePatchDecoder(256).
+Eingabe: Byte-IDs 0–255; Ausgabe: Logits über 256 Bytes.
 """
 from __future__ import annotations
 import torch
@@ -9,6 +9,7 @@ import torch.nn as nn
 from typing import Optional
 
 class BytePatchEncoder(nn.Module):
+    """Byte-ID (0–255) → d_model; in gpt.py als self.embed bei use_blt."""
     def __init__(self, vocab_byte: int = 256, d_model: int = 384):
         super().__init__()
         self.embed = nn.Embedding(vocab_byte, d_model)
@@ -19,6 +20,7 @@ class BytePatchEncoder(nn.Module):
         return self.ngram_proj(x)
 
 class BytePatchDecoder(nn.Module):
+    """Latent → 256 Byte-Logits; in gpt.py als self.lm_head bei use_blt."""
     def __init__(self, d_model: int = 384, vocab_byte: int = 256):
         super().__init__()
         self.decode_proj = nn.Linear(d_model, vocab_byte)

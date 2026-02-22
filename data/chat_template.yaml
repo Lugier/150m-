@@ -1,0 +1,8 @@
+chat_template: "chatml"
+special_tokens:
+  - "<|im_start|>"
+  - "<|im_end|>"
+roles:
+  system: "system"
+  user: "user"
+  assistant: "assistant"

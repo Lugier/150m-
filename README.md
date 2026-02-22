@@ -1,4 +1,4 @@
-# 150m-
+# Giant-Killer: A 100–150M Parameter Code-Only Language Model
 
 <div align="center">
 
@@ -6,209 +6,194 @@
 |--------|---------|---------|
 | 3.10+  | 2.1+    | See repo |
 
-**Code-only decoder. 100–150M parameters. Single RTX 3090. HumanEval+ / MBPP+ / LiveCodeBench.**
+**Code-only decoder. 100–150M parameters. Single-GPU (RTX 3090, 24 GB). Instruction SFT + execution-based RL. HumanEval+ / MBPP+ / LiveCodeBench.**
 
 </div>
 
 ---
 
-## Design & objectives
+## Abstract
 
-- **Setting:** Code generation in the 100–150M parameter regime; single-GPU training (24 GB VRAM).
-- **Objective:** Maximise functional correctness (pass@1, pass@10) on held-out code benchmarks while staying an order of magnitude smaller than typical 1B+ general-purpose baselines.
-- **Metrics:** pass@1 / pass@10 (EvalPlus on HumanEval+ and MBPP+), repair success rate (fix-after-feedback), and long-context performance (LongCodeBench 128K/512K) where applicable.
-- **Reproducibility:** All hyperparameters and data-stage definitions in YAML; fixed seed in config; `verify_plan.py` and `run_smoke_test.sh` lock the pipeline to a single, documented plan.
+We present **Giant-Killer**, a code-only language model in the 100–150M parameter regime, designed for **single-GPU training** (e.g. one RTX 3090 with 24 GB VRAM) and competitive performance on code-generation benchmarks. The pipeline combines: (1) **three-stage pretraining** on code corpora with stage-wise learning rates, checkpoint EMA, and optional **CODA** (code-delta augmentation) and **CodeDenoise** (syntax–semantics filtering); (2) **instruction tuning** with ChatML and assistant-only loss; (3) **reinforcement learning** with GRPO and execution-based rewards, optionally blended with **CodeRL+** semantics-match reward. The architecture supports **extensible research components**: Byte Latent Transformer (BLT), Mamba-2-Hybrid, BitNet b1.58, L-MTP (multi-token prediction), LEAM++ (grammar-constrained decoding), and **test-time evolution** (S*, AB-MCTS, DaJ, PoT). All settings are config-driven (YAML); reproducibility is enforced via fixed seeds, plan-alignment checks, and documented RTX 3090 optimisations.
 
 ---
 
-## What this is
+## 1. Research Context and Objectives
 
-- **Model:** Decoder-only transformer, ~150M params (44 layers, d_model=384). Code-only: no general text, no chat.
-- **Goal:** Strong pass@1 on code benchmarks with a model 10× smaller than typical 1B+ baselines. Training fits one RTX 3090 (24 GB).
-- **Stack:** Three-stage data (broad → clean/edu → curriculum), stage-wise LRs, checkpoint EMA, optional BitNet/BLT/CodeRL+/test-time evolution. Config-driven; no placeholders in the critical path.
+### 1.1 Setting
 
----
+- **Parameter scale:** 100–150M (default: 44 layers, `d_model`=384; cap ≤250M for instruction plan).
+- **Hardware:** Single GPU, 24 GB VRAM (RTX 3090); no multi-node or custom kernels required.
+- **Domain:** Code generation only (no general-purpose text); training and evaluation target functional correctness and repair under feedback.
 
-## Pipeline (high level)
+### 1.2 Objectives
 
-```mermaid
-flowchart LR
-  subgraph DATA
-    S1[Stage 1: broad]
-    S2[Stage 2: clean + CODA/Denoise]
-    S3[Stage 3: curriculum]
-  end
-  subgraph TRAIN
-    PT[Pre-train]
-    EMA[Checkpoint EMA]
-  end
-  subgraph POST
-    SFT[SFT / Distill]
-    CRL[CodeRL+]
-  end
-  subgraph EVAL
-    HE[HumanEval+]
-    LCB[LongCodeBench]
-  end
-  DATA --> PT --> EMA --> POST --> EVAL
-```
+- **Primary:** Maximise **pass@1** and **pass@10** (EvalPlus) on HumanEval+ and MBPP+, and repair success rate (fix-after-feedback), while remaining an order of magnitude smaller than typical 1B+ baselines.
+- **Secondary:** Long-context code (LongCodeBench 128K/512K) and LiveCodeBench where applicable; optional test-time evolution (S*, PoT) for improved robustness at inference.
 
-| Stage   | Role |
-|--------|------|
-| **Data** | 3 stages (config: `data/config_data.yaml`). Stage 1: Stack/Stack-Edu, moderate filters. Stage 2: stricter + CODA + CodeDenoise. Stage 3: synthetic docstring→code→tests, execution filter. RegMix proxy for mixture tuning. |
-| **Pre-train** | `training/train.py`: stage-wise LRs, AdamW param groups, checkpoint EMA, L-MTP curriculum, gradient checkpointing. |
-| **Post-train** | Optional: StepCoder-style curriculum, SFT on green-only trajectories, trajectory distillation, CodeRL+ (execution semantics). |
-| **Eval** | EvalPlus (pass@1 / pass@10), repair rate, LongCodeBench 128K/512K. |
+### 1.3 Metrics and Reproducibility
+
+- **Metrics:** pass@1 / pass@10 (EvalPlus), repair success rate, LongCodeBench accuracy; optional LiveCodeBench.
+- **Reproducibility:** All hyperparameters and data-stage definitions in YAML; fixed seed in config; `verify_plan.py` and `run_smoke_test.sh` lock the pipeline to a single, documented plan. No dummy fallbacks in the critical path: tokenizer, data paths, and RL data are required.
 
 ---
 
-## Architecture (default)
+## 2. Methodology
 
-| Component | Setting |
-|-----------|---------|
-| Layers   | 44      |
-| d_model  | 384     |
-| Heads    | 6       |
-| Vocab    | 16k BPE |
-| Max len  | 1024    |
-| Extras   | QK-norm, value residual, per-head gating. Optional: BitLinear, BLT, Mamba-2 hybrid, LEAM++. |
+### 2.1 Architecture
 
-Defined in `model/config.py` and `training/config_train.yaml`. No custom CUDA kernels required.
+| Component | Default | Extensions |
+|-----------|---------|------------|
+| Layers | 44 | Mamba-2-Hybrid (43% Mamba, 7% Attention, 50% MLP) when `use_mamba_hybrid` |
+| d_model | 384 | — |
+| Heads | 6 | — |
+| Vocab | 16k BPE | BLT: byte-level, 256 |
+| Max sequence length | 1024 | — |
+| Extras | QK-norm, value residual, per-head gating | BitLinear (BitNet b1.58), L-MTP (mtp_n), LEAM++ (inference) |
 
----
+Defined in `model/config.py` and `training/config_train.yaml` / `config_sft.yaml`. Optional components are toggled via YAML (`use_bitnet`, `use_mamba_hybrid`, `use_blt`, `use_leam`, `mtp_n`).
 
-## Quick start
+### 2.2 Data Pipeline
 
-<details>
-<summary><b>1. Clone and install</b></summary>
+- **Stage 1 (broad):** The Stack v2 / Stack-Edu, moderate filters (length, license, near-dedup).  
+- **Stage 2 (clean + adversarial):** Stricter filters; **CodeDenoise** (syntax–semantics consistency); **CODA** (code-difference-guided adversarial augmentation, e.g. `<` → `<=`, `+` → `-`) at configurable rate.  
+- **Stage 3 (curriculum):** Docstring→Code→Tests, execution filter (phi-1-style).  
 
-```bash
-git clone https://github.com/Lugier/150m-.git
-cd 150m-
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-```
+Configuration: `data/config_data.yaml` (stages, `data_pipeline`, `adversarial.coda_mutation_rate`, `run_code_denoise`). RegMix proxy available for mixture tuning.
 
-</details>
+### 2.3 Training Pipeline
 
-<details>
-<summary><b>2. Verify</b></summary>
+1. **Pre-training** (`training/train.py`): Stage-wise learning rates (WSD), NorMuon-AdamW hybrid, checkpoint EMA, gradient checkpointing, bf16. L-MTP forward curriculum optional. **RTX 3090:** `batch_size=8`, `seq_len=512`, `gradient_accumulation_steps=4` (effective batch 32); see `training/config_train.yaml`.
+2. **Instruction SFT** (`training/sft_train.py`): ChatML format; assistant-only labels; Evol-Instruct/teacher data → `instruction_sft.jsonl`. Loads pre-trained checkpoint; `batch_size=6`, `seq_len=1024`, `gradient_accumulation_steps=6` (effective 36) on 24 GB.
+3. **RL** (`training/rl_train.py`): GRPO with execution-based reward (syntax / runtime / test pass); optional **CodeRL+** blend when RL JSONL contains `reference_solution` or `target_code` (semantics-match reward). SFT checkpoint required; `--rl-data` required.
 
-```bash
-python verify_plan.py    # 27 checks (data → model → train → eval → RunPod)
-bash run_smoke_test.sh  # 20-step train + inference + final.pt check
-```
+### 2.4 Post-Training and Inference
 
-Both must pass before a real run.
-
-</details>
-
-<details>
-<summary><b>3. Data (optional; if you want real training)</b></summary>
-
-Data are not included. Example: pull Stage 1 from Hugging Face and train a tokenizer:
-
-```bash
-python data/prepare_data.py --config data/config_data.yaml --stage stage1 \
-  --dataset bigcode/the-stack-smol --max_docs 5000 --output data/processed/stage1.jsonl
-python data/tokenizer_train.py --input data/processed/stage1.jsonl --output data/tokenizer --vocab_size 16384
-```
-
-Without these, training uses dummy data so the script still runs (e.g. smoke test).
-
-</details>
-
-<details>
-<summary><b>4. Train</b></summary>
-
-```bash
-# Short local run
-python training/train.py --config training/config_train.yaml --checkpoint_dir checkpoints --max_steps 500
-
-# RunPod: start command
-cd /workspace/150m- && bash runpod_train.sh
-```
-
-Checkpoints: `checkpoints/ckpt_*.pt`, `checkpoints/final.pt`. EMA is applied at the end when enabled in config.
-
-</details>
-
-<details>
-<summary><b>5. Inference</b></summary>
-
-```bash
-python inference/run_torch.py --checkpoint checkpoints --prompt "def fib(n):" --max_tokens 128
-```
-
-Apple Silicon: `inference/run_mlx.py` (requires MLX model export).
-
-</details>
+- **Execution reward:** `post_training/execution_reward.py` — syntax (−1.0), runtime/timeout (−0.5), tests (+1.0 / −0.5); sandbox via `evaluation/eval_repair.run_tests_in_sandbox`.
+- **CodeRL+:** `post_training/coderl_plus.py` — variable-level execution trajectories and semantics-match reward; wired into `rl_train.py` when reference code is provided.
+- **Inference:** `inference/run_chat.py` (ChatML, interactive), `inference/run_torch.py` (prompt → completion). **LEAM++** grammar constraint applied when `use_leam` is set.
+- **Test-time evolution:** `inference/test_time_evolution.py` — S* (parallel candidates + differentiating tests + sandbox selection), AB-MCTS, DaJ (judge), PoT (transient LoRA/GRPO stub). Sandbox-backed; can be composed with `run_chat` or evaluation scripts.
 
 ---
 
-## Repo layout
+## 3. Experimental Setup (RTX 3090, 24 GB)
+
+| Phase | batch_size | seq_len | gradient_accumulation | Note |
+|-------|------------|---------|------------------------|------|
+| Pre-train | 8 | 512 | 4 | OOM → 6 or seq_len 384 |
+| SFT | 6 | 1024 | 6 | OOM → batch 4 |
+| RL | — | — | num_candidates=4 | Policy + reference on GPU |
+
+**CUDA optimisations** (automatic when `device=cuda`): `torch.backends.cudnn.benchmark = True`; pre-train DataLoader with `pin_memory=True` and `non_blocking=True` for CPU→GPU transfer. Gradient checkpointing is required for 150M on 24 GB. See `DESIGN.md` for details.
+
+---
+
+## 4. Repository Layout
 
 ```
-├── data/           prepare_data, config_data.yaml, regmix_proxy, coda, code_denoise, dataloader, tokenizer_train
-├── model/           config, gpt, bitnet, blt, leam, mamba_hybrid
-├── training/        train.py, scheduler, config_train.yaml, step
-├── post_training/   curriculum, sft_trajectories, distill, coderl_plus, config_post.yaml
-├── inference/       run_torch, run_mlx, test_time_evolution, export_gguf
-├── evaluation/      eval_loss, eval_humaneval, eval_repair, eval_livecode, eval_lcb
-├── verify_plan.py   27 plan-alignment checks
-├── run_smoke_test.sh
-├── runpod_train.sh  RunPod RTX 3090
-├── runpod_run.py
-├── colab_train.ipynb
+├── data/                 prepare_data, config_data.yaml, coda, code_denoise, dataloader, tokenizer_train, sft_dataloader, instruction_data, chat_format
+├── model/                config, gpt, blt, leam, mamba_hybrid; BitLinear in gpt
+├── training/             train.py, sft_train.py, rl_train.py, scheduler, device_utils, config_train.yaml, config_sft.yaml
+├── post_training/        execution_reward, coderl_plus, distill
+├── inference/            run_chat.py, run_torch.py, run_mlx.py, test_time_evolution.py, export_gguf
+├── evaluation/           eval_repair, eval_humaneval, eval_livecode, eval_loss
+├── scripts/              verify_data.py
+├── verify_plan.py       Plan-alignment checks
+├── run_smoke_test.sh    Short train + inference + checkpoint check
+├── DESIGN.md            Efficiency and RTX 3090 notes
 └── requirements.txt
 ```
 
 ---
 
-## RunPod (RTX 3090)
+## 5. Quick Start
 
-1. Pod: RTX 3090, persistent volume at `/workspace`.
-2. Clone repo to `/workspace/150m-`. Put data/tokenizer under `/workspace/llm_plus_data/` if you use them.
-3. Start command: `cd /workspace/150m- && bash runpod_train.sh` (or `python3 runpod_run.py`).
-4. Checkpoints: `/workspace/llm_plus_checkpoints/`.
+### 5.1 Environment
+
+```bash
+git clone https://github.com/Lugier/150m-.git
+cd 150m-
+python -m venv venv && source venv/bin/activate   # or Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 5.2 Verification
+
+```bash
+python verify_plan.py      # Plan-alignment and module checks
+bash run_smoke_test.sh     # Short train + inference + final.pt check
+```
+
+### 5.3 Data (required for full pipeline)
+
+- **Pre-train:** JSONL under `data/processed/` (e.g. `stage1.jsonl`); tokenizer under `data/tokenizer` (e.g. `python data/tokenizer_train.py --input data/processed/stage1.jsonl --output data/tokenizer --vocab_size 16384`).
+- **SFT:** `data/processed/instruction_sft.jsonl` (e.g. from `data/generate_instruction_data.py`).
+- **RL:** Same or dedicated JSONL with `prompt`, `tests`, and optionally `reference_solution` / `target_code` for CodeRL+.
+
+Check: `python scripts/verify_data.py`.
+
+### 5.4 Training
+
+```bash
+# Pre-train (short run)
+python training/train.py --config training/config_train.yaml --checkpoint_dir checkpoints --max_steps 500
+
+# SFT (after pre-train checkpoint)
+python training/sft_train.py --config training/config_sft.yaml --checkpoint checkpoints/final.pt --instruction_data data/processed/instruction_sft.jsonl --output_dir sft_checkpoints
+
+# RL (after SFT)
+python training/rl_train.py --sft-checkpoint sft_checkpoints/final_sft.pt --rl-data data/processed/instruction_sft.jsonl --output-dir rl_checkpoints
+```
+
+### 5.5 Inference
+
+```bash
+python inference/run_torch.py --checkpoint rl_checkpoints --prompt "def fib(n):" --max_tokens 128
+python inference/run_chat.py --checkpoint rl_checkpoints --tokenizer data/tokenizer
+```
+
+Apple Silicon: `inference/run_mlx.py` (requires MLX export). GGUF: `inference/export_gguf.py`.
 
 ---
 
-## Evaluation
+## 6. Evaluation
 
-| Benchmark     | Script / usage |
-|---------------|----------------|
-| HumanEval+ / MBPP+ | `evaluation/eval_humaneval.py` → EvalPlus pass@1, pass@10 |
-| Repair rate   | `evaluation/eval_repair.py` |
-| LongCodeBench | `evaluation/eval_lcb.py` (128K / 512K, folding) |
+| Benchmark | Script |
+|-----------|--------|
+| HumanEval+ / MBPP+ | `evaluation/eval_humaneval.py` (EvalPlus pass@1, pass@10) |
+| Repair success rate | `evaluation/eval_repair.py` |
+| LongCodeBench | `evaluation/eval_lcb.py` |
 | LiveCodeBench | `evaluation/eval_livecode.py` |
 
 ---
 
-## References
+## 7. References and Related Work
 
 | Work | Role in this codebase |
 |------|------------------------|
-| IMU-1 | Three-stage pretraining, stage-wise learning rates, checkpoint EMA |
-| SmolLM2 / Stack-Edu | Code-centric data mix and stage design |
-| RegMix | Proxy-based mixture optimisation for pretraining data |
-| BitNet b1.58 | Optional 1.58-bit linear layers (BitLinear) |
-| CodeRL+ | Optional variable-level execution semantics and reward |
-| EvalPlus | HumanEval+ / MBPP+ evaluation (pass@k) |
+| **IMU-1** | Three-stage pretraining, stage-wise LRs, checkpoint EMA |
+| **SmolLM2 / Stack-Edu** | Code-centric data and stage design |
+| **RegMix** | Proxy-based mixture optimisation for pretraining data |
+| **CODA / CodeDenoise** | Adversarial code deltas and syntax–semantics filtering (Stage 2) |
+| **BitNet b1.58** | Optional 1.58-bit linear layers (BitLinear) |
+| **CodeRL+** | Variable-level execution semantics and semantics-match reward in RL |
+| **LEAM++** | Grammar-constrained decoding at inference |
+| **S* / PoT** | Test-time evolution (parallel candidates, differentiating tests, transient updates) |
+| **EvalPlus** | HumanEval+ / MBPP+ pass@k evaluation |
 
-Further pointers and plan are in the repo; when using this work in publications, cite this repository and the corresponding papers.
+When using this repository in publications, please cite this repo and the corresponding papers for the methods you build upon.
 
 ---
 
-## License and data
+## 8. License and Data
 
-- **Code:** See LICENSE in the repo.
-- **Data:** Not shipped. When using The Stack v2 / Stack-Edu, follow their terms (Hugging Face, SWH). Checkpoints: you own use and distribution.
+- **Code:** See `LICENSE` in the repository.
+- **Data:** Not distributed. Use of The Stack v2 / Stack-Edu must comply with their terms (Hugging Face, SWH). Checkpoints: user responsibility for use and distribution.
 
 ---
 
 <div align="center">
 
-**150m-** — 100–150M code-only decoder, single-GPU training, plan-aligned pipeline.
+**Giant-Killer** — 100–150M code-only decoder, single-GPU training, instruction SFT + execution RL, plan-aligned and reproducible.
 
 </div>

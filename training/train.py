@@ -22,6 +22,7 @@ if str(_ROOT) not in sys.path:
 from model.config import ModelConfig
 from model.gpt import CodeGPTLMHeadModel
 from training.scheduler import StageLRScheduler
+from training.device_utils import resolve_device
 
 try:
     from data.dataloader import get_training_dataloader
@@ -125,23 +126,24 @@ def run_training(
     if device_override is not None:
         train_cfg["device"] = device_override
 
+    m = train_cfg["model"]
+    # Plan §2: use_bitnet, use_mamba_hybrid, use_blt, use_leam aus YAML (config_train.yaml).
     model_cfg = ModelConfig(
-        d_model=train_cfg["model"]["d_model"],
-        n_layer=train_cfg["model"]["n_layer"],
-        n_head=train_cfg["model"]["n_head"],
-        vocab_size=train_cfg["model"]["vocab_size"],
-        max_seq_len=train_cfg["model"]["max_seq_len"],
-        use_bitnet=train_cfg["model"].get("use_bitnet", False),
-        mtp_n=train_cfg["model"].get("mtp_n", 1),
+        d_model=m["d_model"],
+        n_layer=m["n_layer"],
+        n_head=m["n_head"],
+        vocab_size=m["vocab_size"],
+        max_seq_len=m["max_seq_len"],
+        use_bitnet=m.get("use_bitnet", False),
+        use_mamba_hybrid=m.get("use_mamba_hybrid", False),
+        use_blt=m.get("use_blt", False),
+        use_leam=m.get("use_leam", False),
+        mtp_n=m.get("mtp_n", 1),
     )
 
-    device_str = train_cfg.get("device", "cuda")
-    if device_str == "cuda" and not torch.cuda.is_available():
-        device_str = "mps" if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available() else "cpu"
-    elif device_str == "mps" and not (getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()):
-        device_str = "cpu"
-    device = torch.device(device_str)
+    device = resolve_device(device_override or train_cfg.get("device"))
     if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True  # RTX 3090: feste Input-Shapes → schneller
         print(f"GPU: {torch.cuda.get_device_name(0)} (VRAM {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB)")
     elif device.type == "mps":
         print("Using MPS (Apple Silicon)")
@@ -213,39 +215,34 @@ def run_training(
             scheduler.load_state_dict(ckpt["scheduler"])
         start_step = ckpt.get("step", 0)
 
-    # Real dataloader from JSONL when data_dir and tokenizer exist; else dummy
     data_dir_resolved = _ROOT / data_dir if not os.path.isabs(data_dir) else Path(data_dir)
-    tokenizer_path_resolved = (tokenizer_path and (_ROOT / tokenizer_path if not os.path.isabs(tokenizer_path) else Path(tokenizer_path))) or None
+    tokenizer_path_resolved = (tokenizer_path and (_ROOT / tokenizer_path if not os.path.isabs(tokenizer_path) else Path(tokenizer_path))) or _ROOT / "data" / "tokenizer"
     vocab_path_resolved = (vocab_path and (_ROOT / vocab_path if not os.path.isabs(vocab_path) else Path(vocab_path))) or _ROOT / "model" / "vocab"
-    data_loader: Optional[Any] = None
-    data_iter: Optional[Iterator[dict[str, torch.Tensor]]] = None
-    if get_training_dataloader is not None:
-        try:
-            data_loader = get_training_dataloader(
-                data_dir=data_dir_resolved,
-                tokenizer_path=tokenizer_path_resolved or _ROOT / "data" / "tokenizer",
-                vocab_path=vocab_path_resolved,
-                vocab_size=model_cfg.vocab_size,
-                seq_len=seq_len,
-                batch_size=batch_size,
-                seed=train_cfg.get("seed", 42),
-            )
-            if data_loader is not None:
-                data_iter = data_loader.iter_forever()
-                print("Using real data from", data_dir_resolved)
-        except Exception as e:
-            print("Dataloader init failed, using dummy data:", e)
-            data_iter = None
+    if get_training_dataloader is None:
+        raise RuntimeError("Training dataloader not available. Ensure data.dataloader is importable.")
+    data_loader = get_training_dataloader(
+        data_dir=data_dir_resolved,
+        tokenizer_path=tokenizer_path_resolved,
+        vocab_path=vocab_path_resolved,
+        vocab_size=model_cfg.vocab_size,
+        seq_len=seq_len,
+        batch_size=batch_size,
+        seed=train_cfg.get("seed", 42),
+        pin_memory=(device.type == "cuda"),
+    )
+    if data_loader is None:
+        raise FileNotFoundError("Dataloader returned None. Check data_dir and tokenizer path; train tokenizer and prepare JSONL data.")
+    data_iter = data_loader.iter_forever()
+    print("Using data from", data_dir_resolved)
+    first_batch = next(data_iter)
+    print(f"Data check: first batch input_ids shape {first_batch['input_ids'].shape} (batch_size, seq_len)")
 
     def get_batch() -> dict[str, torch.Tensor]:
-        if data_iter is not None:
-            try:
-                return next(data_iter)
-            except StopIteration:
-                pass
-        return {
-            "input_ids": torch.randint(0, model_cfg.vocab_size, (batch_size, seq_len), device=device),
-        }
+        nonlocal first_batch
+        if first_batch is not None:
+            out, first_batch = first_batch, None
+            return out
+        return next(data_iter)
 
     global_step = start_step
     running_loss = 0.0
@@ -254,7 +251,8 @@ def run_training(
         for _ in range(grad_accum):
             batch = get_batch()
             if batch["input_ids"].device != device:
-                batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                non_blocking = (device.type == "cuda" and batch["input_ids"].is_pinned())
+                batch = {k: v.to(device, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             loss = train_step(model, batch, device, scaler)
             running_loss += loss
         if scaler is not None:

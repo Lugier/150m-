@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -101,11 +102,23 @@ def stage_stream(
     config: dict[str, Any],
     source_iter: Iterator[dict[str, Any]],
 ) -> Iterator[dict[str, Any]]:
+    """Apply stage filters; for stage2 also Plan §2 CODA/CodeDenoise from config_data.yaml."""
+    from data.code_denoise import clean_syntax_semantics
+    from data.coda import apply_coda
+
     stages = config.get("stages", {})
     stage_cfg = stages.get(stage_name, {})
     filters = stage_cfg.get("filters", {})
     if filters.get("near_dedup"):
         source_iter = near_dedup(source_iter, threshold=filters.get("dedup_threshold", 0.95))
+
+    # Plan §2.6: Stage 2 = CodeDenoise (syntax–semantics filter) + CODA (adversarial code deltas).
+    run_code_denoise = False
+    coda_rate = 0.0
+    if stage_name == "stage2":
+        pipeline = config.get("data_pipeline", {})
+        run_code_denoise = pipeline.get("stage_2_mix", {}).get("filters", {}).get("run_code_denoise", False)
+        coda_rate = config.get("adversarial", {}).get("coda_mutation_rate", 0.0)
 
     if stage_name == "stage1":
         pred = lambda d: filter_stage1(d, filters)
@@ -115,8 +128,19 @@ def stage_stream(
         pred = lambda d: filter_stage3(d, filters)
 
     for doc in source_iter:
-        if pred(doc):
-            yield doc
+        if not pred(doc):
+            continue
+        if run_code_denoise:
+            code = doc.get("code", "") or doc.get("content", "")
+            if not clean_syntax_semantics(code, doc.get("docstring", "")):
+                continue
+        # CODA: mit coda_rate Wahrscheinlichkeit Code-Deltas (z.B. < → <=) anwenden.
+        if coda_rate > 0 and random.random() < coda_rate:
+            code = doc.get("code", "") or doc.get("content", "")
+            mutated = apply_coda(code)
+            if mutated != code:
+                doc = {**doc, "code": mutated, "content": doc.get("content") or mutated}
+        yield doc
 
 
 def load_hf_dataset_stream(

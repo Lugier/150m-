@@ -61,13 +61,17 @@ device: cpu
 seed: 42
 EOF
 
+echo "[1b] Data check..."
+python3 scripts/verify_data.py || true
+
 echo "[2/4] Running Training Loop (20 steps)..."
+echo "     (Requires data/processed/*.jsonl and data/tokenizer; see DESIGN.md)"
 rm -rf smoke_checkpoints
-python training/train.py --config testing_smoke_config.yaml --checkpoint_dir smoke_checkpoints --data_dir data/processed --device cpu
+python3 training/train.py --config testing_smoke_config.yaml --checkpoint_dir smoke_checkpoints --data_dir data/processed --device cpu
 
 echo ""
 echo "[3/4] Running Inference (run_torch.py)..."
-python inference/run_torch.py --checkpoint smoke_checkpoints --prompt "def fib(n):" --max_tokens 10
+python3 inference/run_torch.py --checkpoint smoke_checkpoints --prompt "def fib(n):" --max_tokens 10
 
 echo ""
 echo "[4/4] Validation..."

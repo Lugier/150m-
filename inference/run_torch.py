@@ -10,6 +10,7 @@ if str(_ROOT) not in sys.path:
 
 from model.gpt import CodeGPTLMHeadModel
 from model.config import ModelConfig
+from model.leam import LEAMGrammarConstrainer
 
 def main():
     parser = argparse.ArgumentParser()
@@ -47,14 +48,18 @@ def main():
         with open("training/config_train.yaml") as f:
             train_cfg = yaml.safe_load(f)
 
+    m = train_cfg.get("model", {})
     model_cfg = ModelConfig(
-        d_model=train_cfg["model"]["d_model"],
-        n_layer=train_cfg["model"]["n_layer"],
-        n_head=train_cfg["model"]["n_head"],
-        vocab_size=train_cfg["model"]["vocab_size"],
-        max_seq_len=train_cfg["model"]["max_seq_len"],
-        use_bitnet=train_cfg["model"].get("use_bitnet", False),
-        mtp_n=train_cfg["model"].get("mtp_n", 1),
+        d_model=m.get("d_model", 384),
+        n_layer=m.get("n_layer", 44),
+        n_head=m.get("n_head", 6),
+        vocab_size=m.get("vocab_size", 16384),
+        max_seq_len=m.get("max_seq_len", 1024),
+        use_bitnet=m.get("use_bitnet", False),
+        use_mamba_hybrid=m.get("use_mamba_hybrid", False),
+        use_blt=m.get("use_blt", False),
+        use_leam=m.get("use_leam", False),
+        mtp_n=m.get("mtp_n", 1),
     )
 
     model = CodeGPTLMHeadModel(model_cfg)
@@ -62,19 +67,18 @@ def main():
     model.to(device)
     model.eval()
 
-    # NOTE: Using dummy tokenizer if real one fails to load
-    try:
-        from transformers import PreTrainedTokenizerFast
-        tokenizer = PreTrainedTokenizerFast.from_pretrained(args.tokenizer)
-        encode = lambda s: tokenizer.encode(s)
-        decode = lambda t: tokenizer.decode(t)
-    except Exception as e:
-        print(f"Warning: Could not load real tokenizer ({e}), using character-level dummy fallback.")
-        chars = sorted(list(set(args.prompt + "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ()[]{}|+-*/=")))
-        stoi = { ch:i for i,ch in enumerate(chars) }
-        itos = { i:ch for i,ch in enumerate(chars) }
-        encode = lambda s: [stoi.get(c, 0) for c in s]
-        decode = lambda l: ''.join([itos.get(i, '') for i in l])
+    from transformers import PreTrainedTokenizerFast
+    _tp = Path(args.tokenizer)
+    if not _tp.is_absolute():
+        _tp = Path.cwd() / _tp
+    _j = _tp if _tp.suffix == ".json" else _tp / "tokenizer.json"
+    if not _j.exists():
+        raise FileNotFoundError(f"Tokenizer not found: {_j}. Train tokenizer (e.g. python data/tokenizer_train.py --output data/tokenizer).")
+    tokenizer = PreTrainedTokenizerFast(tokenizer_file=str(_j)) if _j.suffix == ".json" else PreTrainedTokenizerFast.from_pretrained(str(_tp))
+    encode = lambda s: tokenizer.encode(s)
+    decode = lambda t: tokenizer.decode(t)
+    # LEAM++ (Plan §2): bei use_leam Logits vor Sampling grammatikalisch beschränken.
+    leam_constrainer = LEAMGrammarConstrainer(tokenizer) if getattr(model_cfg, "use_leam", False) else None
 
     input_ids = torch.tensor([encode(args.prompt)], dtype=torch.long, device=device)
 
@@ -85,8 +89,13 @@ def main():
                 input_ids = input_ids[:, -model_cfg.max_seq_len:]
                 
             logits = model(input_ids)["logits"]
-            next_token_logits = logits[0, -1, :]
-            
+            next_token_logits = logits[0, -1, :].clone()
+            if leam_constrainer is not None:
+                # LEAM: constrain_logits(sequence_ids, logits) vor Sampling.
+                next_token_logits = leam_constrainer.constrain_logits(
+                    input_ids[0].tolist(), next_token_logits.unsqueeze(0)
+                )[0]
+
             if args.temperature == 0:
                 next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
             else:

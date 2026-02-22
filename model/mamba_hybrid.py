@@ -1,6 +1,7 @@
 """
-Mamba-2-Hybrid – optional/2R: 43% Mamba-2, 7% Attention, 50% MLP.
-Requires mamba-ssm or equivalent; this module provides the layer router and stub.
+Mamba-2-Hybrid (Plan §2): 43% Mamba-2, 7% Attention, 50% MLP per layer index.
+Used in gpt.py when config.use_mamba_hybrid is True. Requires mamba-ssm for real Mamba2;
+otherwise MambaBlockStub preserves shape. All layer types return (x, cache) for unified forward.
 """
 
 from __future__ import annotations
@@ -23,8 +24,8 @@ class MambaBlockStub(nn.Module):
         super().__init__()
         self.proj = nn.Linear(d_model, d_model)
 
-    def forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
-        return x + self.proj(x)
+    def forward(self, x: torch.Tensor, *args, **kwargs) -> tuple[torch.Tensor, None]:
+        return x + self.proj(x), None
 
 class Mamba2Wrapper(nn.Module):
     """Wrap Mamba2 to ignore attention-specific kwargs like attention_mask/past_kv."""
@@ -34,14 +35,14 @@ class Mamba2Wrapper(nn.Module):
         self.mamba = Mamba2(d_model=d_model, d_state=128, d_conv=4, expand=2)
         
     def forward(self, x: torch.Tensor, *args, **kwargs) -> tuple[torch.Tensor, None]:
-        # returns output and a dummy cache
+        # returns output and a minimal cache for API compatibility
         return self.mamba(x), None
 
 
 def make_mamba_hybrid_layer(config: ModelConfig, layer_idx: int) -> nn.Module:
     """
-    Return one hybrid layer: Mamba, Attention, or MLP by ratio.
-    Layer type determined by (layer_idx / n_layer) vs mamba_ratio, attention_ratio, mlp_ratio.
+    Return one hybrid layer: Mamba, Attention, or MLP by ratio (Plan §2).
+    r = layer_idx/n_layer; r < mamba_ratio → Mamba, else r < mamba+attention → TransformerBlock, else MLP-only.
     """
     n = config.n_layer
     r = layer_idx / max(1, n)
@@ -57,7 +58,12 @@ def make_mamba_hybrid_layer(config: ModelConfig, layer_idx: int) -> nn.Module:
         from .gpt import TransformerBlock
         return TransformerBlock(config)
     from .gpt import MLP
-    return nn.Sequential(
-        nn.LayerNorm(config.d_model, eps=config.layer_norm_eps),
-        MLP(config),
-    )
+    # MLP-only block (50%): same (x, cache) API for gpt.py
+    class MLPOnlyBlock(nn.Module):
+        def __init__(self, cfg: ModelConfig) -> None:
+            super().__init__()
+            self.ln = nn.LayerNorm(cfg.d_model, eps=cfg.layer_norm_eps)
+            self.mlp = MLP(cfg)
+        def forward(self, x: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, use_cache: bool = False, past_kv: Optional[tuple] = None) -> tuple[torch.Tensor, None]:
+            return x + self.mlp(self.ln(x)), None
+    return MLPOnlyBlock(config)

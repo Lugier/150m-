@@ -1,103 +1,92 @@
 """
-Test-Time Evolution (Plan Abschn. 2.8, verbindlich):
-S* (parallele Kandidaten + differenzierende Test-Inputs), AB-MCTS, DaJ, PoT.
-Concrete sandbox execution replacements for previous stubs.
+Test-Time Evolution (Plan §2.8): S*, AB-MCTS, DaJ, PoT.
+S*: parallele Kandidaten + Sandbox-Auswahl (+ optional differenzierende Tests).
+AB-MCTS/DaJ/PoT: Stubs/APIs für Adaptive MCTS, Judge, transiente LoRA/GRPO-Updates.
 """
+
 from __future__ import annotations
-import math
-import tempfile
-import subprocess
-from typing import Any
 
-def execute_in_sandbox(code: str) -> dict[str, Any]:
-    """Real isolated execution environment using Python subprocess."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=True) as f:
-        f.write(code)
-        f.flush()
-        try:
-            result = subprocess.run(
-                ["python3", f.name], 
-                capture_output=True, 
-                text=True, 
-                timeout=2.0
-            )
-            return {"passed": result.returncode == 0, "output": result.stdout, "error": result.stderr}
-        except subprocess.TimeoutExpired:
-            return {"passed": False, "output": "", "error": "Timeout"}
-        except Exception as e:
-            return {"passed": False, "output": "", "error": str(e)}
+from typing import Any, Callable, List, Optional, Tuple
 
-def s_star_generate(model: Any, problem: str, num_candidates: int = 16) -> list[dict[str, Any]]:
-    """Physical text generation utilizing actual inference decoding."""
-    candidates = []
-    
-    # In a full model run, 'model.generate' is called here with varying temperatures.
-    # To avoid arbitrary import failures in the structural pipeline, we define the concrete
-    # execution harness connecting the outputs.
-    
-    for i in range(num_candidates):
-        # We simulate the LM text generation returning python code variations
-        generated_code = f"def solve():\n    return {i}\nprint('success')"
-        eval_dict = execute_in_sandbox(generated_code)
-        
-        candidates.append({
-            "code": generated_code,
-            "passed": eval_dict["passed"],
-            "trajectory": ["draft", "test", "fix"],
-            "score": 1.0 if eval_dict["passed"] else 0.0
-        })
-    return candidates
+def _run_tests(code: str, tests: List[str]) -> Tuple[bool, str]:
+    """Lazy import um zirkuläre Imports zu vermeiden."""
+    from evaluation.eval_repair import run_tests_in_sandbox
+    return run_tests_in_sandbox(code, tests)
 
-def ab_mcts_step(node: dict, model: Any, problem: str):
+
+def s_star_select(
+    candidates: List[str],
+    tests: List[str],
+    differentiating_tests: Optional[List[str]] = None,
+) -> Tuple[int, List[Tuple[int, bool]]]:
     """
-    Adaptive Branching Monte Carlo Tree Search:
-    Expands nodes with high UCT, rolls out trajectories.
+    S* Selection (Plan §2.8): Alle Kandidaten in Sandbox gegen tests (+ differentiating_tests)
+    laufen lassen; Index des besten (erster der passt) und pro-Kandidat (idx, passed).
     """
-    node["visits"] += 1
-    if len(node["children"]) < 3: 
-        # Instantiate a new physical state and compute its execution value
-        new_val = 1.0 if node["visits"] % 2 == 0 else 0.0
-        node["children"].append({"visits": 0, "value": new_val, "children": []})
-        return "branch"
-    else: 
-        # Follow highest UCB
-        best_child = max(node["children"], key=lambda c: c["value"] / (c["visits"] + 1) + math.sqrt(2 * math.log(node["visits"]) / (c["visits"] + 1)))
-        return ab_mcts_step(best_child, model, problem)
+    all_tests = list(tests) + (differentiating_tests or [])
+    results: List[Tuple[int, bool]] = []
+    for i, code in enumerate(candidates):
+        passed, _ = _run_tests(code, all_tests)
+        results.append((i, passed))
+    # Best = first that passed; else first candidate
+    for i, passed in results:
+        if passed:
+            return i, results
+    return 0, results
 
-def daj_judge(choices: list[dict], problem: str) -> list[float]:
-    """Data-Reweighted LLM Judge for Bi-level optimization."""
-    # Real DAJ ranks based on actual sandbox scores and AST complexities
-    return [c.get("score", 0.0) for c in choices]
 
-def pot_update(model: Any, feedback: list[dict]):
+def s_star_generate(
+    generate_fn: Callable[[str, int], List[str]],
+    prompt: str,
+    tests: List[str],
+    num_candidates: int = 16,
+    differentiating_tests: Optional[List[str]] = None,
+) -> str:
     """
-    Policy of Thoughts (PoT). Transient LoRA updates per GRPO during runtime.
-    Actual gradient accumulation logic against execution rewards.
+    S* Generation: generate_fn(prompt, n) liefert n Code-Strings; bester wird per
+    s_star_select (Sandbox) gewählt. Für Integration in run_chat/Evaluator.
     """
-    print("Executing Policy of Thoughts (PoT)... Applying transient self-improvement gradient steps.")
-    if model and hasattr(model, 'train'):
-        # Here we would lock the base model weights, attach a PEFT LoRA adapter,
-        # and backpropagate the successful trajectory losses.
-        pass
-    return model
+    candidates = generate_fn(prompt, num_candidates)
+    if not candidates:
+        return ""
+    best_idx, _ = s_star_select(candidates, tests, differentiating_tests)
+    return candidates[best_idx]
 
-def run_test_time_evolution(problem: str, env_sandbox: Any = None) -> str:
-    print(f"Initiating Test-Time Evolution for: {problem[:20]}...")
-    candidates = s_star_generate(None, problem, num_candidates=16)
-    
-    # Run AB-MCTS to expand/branch context tree
-    root = {"visits": 1, "value": 0, "children": []}
-    for _ in range(5): 
-        ab_mcts_step(root, None, problem)
-        
-    scores = daj_judge(candidates, problem)
-    best_idx = max(range(len(scores)), key=lambda i: scores[i])
-    best = candidates[best_idx].get("code", "")
-    
-    # PoT Policy Shift based on highest reward bounds
-    pot_update(None, candidates)
-    
-    return best
 
-if __name__ == "__main__":
-    print(run_test_time_evolution("Write a quicksort", None))
+def ab_mcts_score(
+    code: str,
+    tests: List[str],
+    num_rollouts: int = 4,
+) -> float:
+    """AB-MCTS (Plan §2.8): Stub – Bewertung hier nur über Sandbox Pass/Fail."""
+    passed, _ = _run_tests(code, tests)
+    return 1.0 if passed else 0.0
+
+
+def daj_judge(
+    solution_a: str,
+    solution_b: str,
+    problem: str,
+    tests: List[str],
+) -> int:
+    """DaJ (Plan §2.8): Vergleich zweier Lösungen. Stub: Sieg per Sandbox (Pass/Fail); -1/0/1."""
+    pa, _ = _run_tests(solution_a, tests)
+    pb, _ = _run_tests(solution_b, tests)
+    if pa and not pb:
+        return -1
+    if pb and not pa:
+        return 1
+    return 0
+
+
+def pot_update_hook(
+    model: Any,
+    feedback: List[float],
+    candidates: List[str],
+    lr: float = 1e-6,
+) -> None:
+    """
+    PoT (Plan §2.8): Transiente LoRA/GRPO-Updates zur Laufzeit. Stub: kein echtes Update;
+    Produktion würde Execution-/Konfidenz-Feedback für on-the-fly Adapter nutzen.
+    """
+    pass

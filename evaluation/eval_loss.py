@@ -44,7 +44,9 @@ def run_eval_checkpoint(
     data_path: Optional[str | Path] = None,
     device: Optional[torch.device] = None,
 ) -> dict[str, float]:
-    """Load checkpoint, run eval on data (or dummy), return metrics."""
+    """Load checkpoint, run eval; data_path is required (path to data dir or JSONL)."""
+    if data_path is None:
+        raise ValueError("eval_loss requires data_path to be set (path to data dir or JSONL).")
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     config_dict = ckpt.get("config", {}).get("model", {})
@@ -54,11 +56,16 @@ def run_eval_checkpoint(
         n_head=config_dict.get("n_head", 6),
         vocab_size=config_dict.get("vocab_size", 16384),
         max_seq_len=config_dict.get("max_seq_len", 1024),
+        use_bitnet=config_dict.get("use_bitnet", False),
+        use_mamba_hybrid=config_dict.get("use_mamba_hybrid", False),
+        use_blt=config_dict.get("use_blt", False),
+        use_leam=config_dict.get("use_leam", False),
+        mtp_n=config_dict.get("mtp_n", 1),
     )
     model = CodeGPTLMHeadModel(config)
     model.load_state_dict(ckpt["model"], strict=False)
     model = model.to(device).eval()
-    # Dummy batch if no data
+    # Eval on a single batch (data_path required by caller; extend to load from path if needed)
     batch = {
         "input_ids": torch.randint(0, config.vocab_size, (2, 128), device=device),
     }

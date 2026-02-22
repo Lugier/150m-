@@ -1,16 +1,13 @@
 """
-CodeDenoise: Validates syntax-semantics consistency.
-Raw data contains noise; this localized filter cleans broken chunks.
+CodeDenoise (Plan §2.6): Syntax–Semantik-Filter für Rohdaten.
+Stage-2-Stream in prepare_data nutzt clean_syntax_semantics/code_denoise_filter
+bei run_code_denoise in config_data.yaml.
 """
 
 import ast
 
 def clean_syntax_semantics(code: str, docstring: str) -> bool:
-    """
-    CodeDenoise Logic: 
-    Validates if the raw code matches expected structure (no basic syntax errors).
-    Returns False if code is noisy/broken. Future versions expand on NLP docstring checks.
-    """
+    """True wenn Code parsbare AST hat; bei docstring mind. eine FunctionDef."""
     try:
         tree = ast.parse(code)
         # Verify function defs exist if a docstring is provided

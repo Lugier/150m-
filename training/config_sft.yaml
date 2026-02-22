@@ -1,0 +1,39 @@
+# SFT für 150M Giant-Killer (Instruction SFT + RL). Optimiert für RTX 3090 (24 GB).
+# gradient_checkpointing + bf16; batch 6 × seq 1024, grad_accum 6 → effektiv 36. OOM → batch 4.
+device: cuda
+model:
+  d_model: 384
+  n_layer: 44
+  n_head: 6
+  vocab_size: 16390 # Increased for ChatML if added as special tokens
+  max_seq_len: 1024
+  use_bitnet: false
+  use_mamba_hybrid: false
+  use_blt: false
+  use_leam: false
+  mtp_n: 1 # Standard next token prediction for SFT
+
+training:
+  batch_size: 6          # RTX 3090 24GB; OOM → 4
+  seq_len: 1024
+  gradient_accumulation_steps: 6  # effektiver Batch 36
+  max_steps: 10000
+  eval_every: 500
+  save_every: 2000
+  mixed_precision: "bf16"
+  gradient_checkpointing: true
+
+optimizer:
+  use_normuon: true 
+  weight_decay: 0.01
+  momentum: 0.95
+  betas: [0.9, 0.95]
+
+scheduler:
+  warmup_steps: 500
+  # Single stage for SFT, lower LR than pretraining
+  lr: 2.0e-5
+
+ema:
+  enabled: true
+  decay: 0.999

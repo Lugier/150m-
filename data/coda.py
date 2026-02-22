@@ -1,7 +1,7 @@
 """
-CODA (Code Difference-Guided Adversarial Augmentation)
-Generates marginal code deltas (e.g. x < y -> x <= y, + -> -) to force the model
-to differentiate microscopic, semantically severe differences.
+CODA (Plan §2.6): Code Difference-Guided Adversarial Augmentation.
+Marginale Deltas (z.B. < → <=, + → -) für Stage-2-Daten; in prepare_data.stage_stream
+bei coda_mutation_rate angewendet.
 """
 
 import ast
@@ -41,7 +41,7 @@ class CODAMutator(ast.NodeTransformer):
         return node
 
 def apply_coda(code: str) -> str:
-    """Applies adversarial augmentations to code snippets for Stage 2/3 datasets."""
+    """AST-basierte Mutation (Compare/BinOp); für Stage-2-Stream in prepare_data."""
     try:
         tree = ast.parse(code)
         mutator = CODAMutator()

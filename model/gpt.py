@@ -12,6 +12,13 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
+
+
+def _block_forward(block: nn.Module, x: torch.Tensor, causal: torch.Tensor) -> Tuple[torch.Tensor, None]:
+    """Used for gradient checkpointing; no cache."""
+    out, _ = block(x, attention_mask=causal, use_cache=False, past_kv=None)
+    return out, None
 
 from .config import ModelConfig
 from .bitnet import BitLinear
@@ -143,7 +150,9 @@ class TransformerBlock(nn.Module):
 
 class CodeGPTLMHeadModel(nn.Module):
     """
-    Code-only GPT with optional L-MTP (multiple next-token heads).
+    Code-only GPT with L-MTP, optional BLT (byte representation) and Mamba-2-Hybrid (Plan §2).
+    BLT: byte input 0–255 → BytePatchEncoder → blocks → BytePatchDecoder (vocab 256).
+    Mamba-Hybrid: blocks are mix of Mamba / Attention / MLP by config ratios.
     """
 
     def __init__(self, config: ModelConfig) -> None:
@@ -151,26 +160,50 @@ class CodeGPTLMHeadModel(nn.Module):
         self.config = config
         self.max_seq_len = config.max_seq_len
         self.mtp_n = max(1, config.mtp_n)
+        self._use_blt = getattr(config, "use_blt", False)
+        # BLT uses 256-byte vocab for head/loss; otherwise config.vocab_size (e.g. 16k BPE).
+        self._vocab_size_head = 256 if self._use_blt else config.vocab_size
 
-        self.embed = nn.Embedding(config.vocab_size, config.d_model, padding_idx=config.pad_token_id)
+        if self._use_blt:
+            from .blt import BytePatchEncoder, BytePatchDecoder
+            self.embed = BytePatchEncoder(vocab_byte=256, d_model=config.d_model)
+            self.lm_head = BytePatchDecoder(d_model=config.d_model, vocab_byte=256)
+        else:
+            self.embed = nn.Embedding(config.vocab_size, config.d_model, padding_idx=config.pad_token_id)
+            self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         self.pos_embed = nn.Parameter(torch.zeros(1, config.max_seq_len, config.d_model))
         nn.init.normal_(self.pos_embed, std=0.02)
 
-        self.blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layer)])
+        # Plan §2: Mamba-2-Hybrid (43% Mamba, 7% Attention, 50% MLP) vs pure Transformer.
+        if getattr(config, "use_mamba_hybrid", False):
+            from .mamba_hybrid import make_mamba_hybrid_layer
+            self.blocks = nn.ModuleList([make_mamba_hybrid_layer(config, i) for i in range(config.n_layer)])
+        else:
+            self.blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layer)])
         self.ln_f = RMSNorm(config.d_model, config.layer_norm_eps)
 
-        # LM head: shared trunk, mtp_n prediction heads
-        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+        if not self._use_blt and not hasattr(self, "lm_head"):
+            self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+        # L-MTP: extra heads for multi-token prediction; output size must match head vocab (256 for BLT).
         if config.mtp_n > 1:
             self.mtp_heads = nn.ModuleList([
-                nn.Linear(config.d_model, config.vocab_size, bias=False)
+                nn.Linear(config.d_model, self._vocab_size_head, bias=False)
                 for _ in range(config.mtp_n - 1)
             ])
         else:
             self.mtp_heads = nn.ModuleList([])
 
-        self.embed.weight.data.normal_(std=0.02)
+        if not self._use_blt:
+            self.embed.weight.data.normal_(std=0.02)
+        self._gradient_checkpointing = False
         self.apply(self._init_weights)
+
+    def gradient_checkpointing_enable(self) -> None:
+        """Enable activation checkpointing per block (Plan §6: VRAM/Peak)."""
+        self._gradient_checkpointing = True
+
+    def gradient_checkpointing_disable(self) -> None:
+        self._gradient_checkpointing = False
 
     def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear) and module.bias is not None:
@@ -191,15 +224,21 @@ class CodeGPTLMHeadModel(nn.Module):
         B, T = input_ids.shape
         assert T <= self.max_seq_len
 
-        x = self.embed(input_ids) + self.pos_embed[:, :T, :]
+        # BLT expects byte IDs 0–255; BPE token ids are clamped when use_blt.
+        inp = input_ids.clamp(0, 255) if self._use_blt else input_ids
+        x = self.embed(inp) + self.pos_embed[:, :T, :]
         causal = torch.tril(torch.ones(T, T, device=input_ids.device, dtype=torch.bool)).unsqueeze(0).expand(B, -1, -1)
         if attention_mask is not None:
             causal = causal & attention_mask.unsqueeze(1).bool()
 
         cache_list: list[Optional[Tuple[torch.Tensor, torch.Tensor]]] = []
+        use_ckpt = self.training and getattr(self, "_gradient_checkpointing", False) and not use_cache
         for i, block in enumerate(self.blocks):
             past = past_kv_list[i] if past_kv_list is not None else None
-            x, cache = block(x, attention_mask=causal, use_cache=use_cache, past_kv=past)
+            if use_ckpt:
+                x, cache = checkpoint(_block_forward, block, x, causal, use_reentrant=False)
+            else:
+                x, cache = block(x, attention_mask=causal, use_cache=use_cache, past_kv=past)
             if use_cache:
                 cache_list.append(cache)
 
@@ -208,7 +247,8 @@ class CodeGPTLMHeadModel(nn.Module):
 
         loss = None
         if labels is not None:
-            shift_logits = logits[..., :-1, :].contiguous().view(-1, self.config.vocab_size)
+            # Use _vocab_size_head (256 for BLT) so cross_entropy dimension matches.
+            shift_logits = logits[..., :-1, :].contiguous().view(-1, self._vocab_size_head)
             shift_labels = labels[..., 1:].contiguous().view(-1)
             loss = F.cross_entropy(shift_logits, shift_labels, ignore_index=-100)
 
@@ -217,7 +257,7 @@ class CodeGPTLMHeadModel(nn.Module):
                     if offset >= len(mtp_labels):
                         break
                     logits_t = head(x)
-                    shift_t = logits_t[..., :-1, :].contiguous().view(-1, self.config.vocab_size)
+                    shift_t = logits_t[..., :-1, :].contiguous().view(-1, self._vocab_size_head)
                     labels_t = mtp_labels[offset][..., 1:].contiguous().view(-1)
                     loss = loss + F.cross_entropy(shift_t, labels_t, ignore_index=-100)
                 loss = loss / max(1, min(len(mtp_labels), self.mtp_n))
