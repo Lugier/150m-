@@ -1,0 +1,35 @@
+# Code-Only-LLM 100–150M – Abhängigkeiten (Plan Abschnitt 11)
+# Python 3.10+
+
+# Training (Kern)
+torch>=2.1.0
+transformers>=4.36.0
+tokenizers>=0.15.0
+datasets>=2.16.0
+safetensors>=0.4.0
+accelerate>=0.25.0
+
+# Daten
+pyyaml>=6.0
+tqdm>=4.66.0
+numpy>=1.24.0
+huggingface_hub>=0.20.0
+
+# Optional: bitsandbytes, NorMuon/Muon, u-µP, bitnet (BitNet b1.58), TernaryLM;
+# VeRL/RLVR für CodeRL+; Mamba-2, CODA/CodeDenoise-Repos
+# bitsandbytes>=0.41.0
+# flash-attn>=2.5.0  # RunPod CUDA
+
+# Inferenz (Apple Silicon primär)
+mlx>=0.18.0
+mlx-lm>=0.18.0
+
+# Optional: llama-cpp-python / GGUF-Tooling
+# llama-cpp-python>=0.2.0
+
+# Evaluation (Kern)
+evalplus>=0.0.21
+human-eval>=0.0.1
+
+# Optional: LiveCodeBench, DS-1000, BigCodeBench, LongCodeBench (HF) für 128K/512K-Eval
+# SWH/Compliance wo nötig

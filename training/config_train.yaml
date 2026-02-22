@@ -1,0 +1,58 @@
+# Trainingssystem (Plan Abschn. 6): BitNet b1.58 + TernaryLM, NorMuon-AdamW-Hybrid,
+# Leap MTP (L-MTP) mit Forward Curriculum, WSD + Stage-LRs, Checkpoint-EMA.
+# u-µP-kompatibel; RunPod RTX 3090 (24 GB): Batch 4–8, Seq 512–1024.
+
+model:
+  config_path: model/config.py
+  d_model: 384
+  n_layer: 44
+  n_head: 6
+  vocab_size: 16384
+  max_seq_len: 1024
+  use_bitnet: false
+  use_mamba_hybrid: false
+  mtp_n: 1
+
+# L-MTP Forward Curriculum (2R): NTP → stufenweise volle L-MTP (Plan 2.5)
+lmtp_forward_curriculum:
+  warmup_steps: 2000
+  mtp_n_max: 4
+
+optimizer:
+  name: normuon_adamw_hybrid
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+
+scheduler:
+  type: wsd
+  warmup_steps: 500
+  stable_steps: 0
+  decay_steps: 0
+  stage_lrs:
+    stage1: 3.0e-4
+    stage2: 1.5e-4
+    stage3: 5.0e-5
+
+training:
+  batch_size: 6
+  seq_len: 512
+  gradient_accumulation_steps: 4
+  max_steps: 100000
+  eval_every: 2000
+  save_every: 5000
+  gradient_checkpointing: true
+  mixed_precision: bf16
+
+# Checkpoint-EMA (Plan 6: EMA über letzte N Checkpoints, Final = EMA-Average)
+ema:
+  enabled: true
+  window: 5
+  decay: 0.999
+
+stages:
+  stage1_steps: 40000
+  stage2_steps: 35000
+  stage3_steps: 25000
+
+device: cuda
+seed: 42

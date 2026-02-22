@@ -1,0 +1,96 @@
+"""
+Model config for 100-150M Code-Only-LLM (Giant-Killer).
+Deep-Thin (40-48 layers, d_model=384), optional Mamba-2-Hybrid, BitNet b1.58, L-MTP.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass
+class ModelConfig:
+    """Single config for 100-150M target; IMU-1 / Deep-Thin compatible."""
+
+    # Size
+    d_model: int = 384
+    n_layer: int = 44
+    n_head: int = 6
+    head_dim: int | None = None  # default d_model // n_head
+    intermediate_size: int | None = None  # default 4 * d_model (ffn)
+    vocab_size: int = 16384
+    max_seq_len: int = 1024
+
+    # Architecture
+    use_bitnet: bool = False
+    use_mamba_hybrid: bool = False
+    mamba_ratio: float = 0.43
+    attention_ratio: float = 0.07
+    mlp_ratio: float = 0.50
+    use_leam: bool = False
+    use_masa: bool = False
+    use_mohd: bool = False
+
+    # L-MTP (Leap Multi-Token Prediction)
+    mtp_n: int = 1  # 1 = next-token only; 2-4 = multi-token
+
+    # Regularization
+    attn_dropout: float = 0.0
+    resid_dropout: float = 0.0
+    layer_norm_eps: float = 1e-5
+
+    # QK-Norm, gating (IMU-1)
+    qk_norm: bool = True
+    use_value_residual: bool = True
+    use_per_head_gating: bool = True
+
+    pad_token_id: int = 0
+    bos_token_id: int = 1
+    eos_token_id: int = 2
+
+    def __post_init__(self) -> None:
+        if self.head_dim is None:
+            self.head_dim = self.d_model // self.n_head
+        if self.intermediate_size is None:
+            self.intermediate_size = 4 * self.d_model
+
+    @property
+    def num_parameters_approx(self) -> int:
+        """Rough parameter count (embedding + layers)."""
+        emb = self.vocab_size * self.d_model
+        # per layer: attn ~ 4*d^2, ffn ~ 3*4*d^2 = 12*d^2
+        per_layer = 4 * self.d_model * self.d_model + 3 * self.d_model * self.intermediate_size
+        return int(emb + self.n_layer * per_layer)
+
+
+# Preset configs from plan
+EARLY_ITERATION_CONFIG = ModelConfig(
+    d_model=384,
+    n_layer=28,
+    n_head=6,
+    vocab_size=16384,
+    max_seq_len=512,
+    mtp_n=1,
+)
+
+TARGET_100_150M_CONFIG = ModelConfig(
+    d_model=384,
+    n_layer=44,
+    n_head=6,
+    vocab_size=16384,
+    max_seq_len=1024,
+    use_bitnet=False,
+    use_mamba_hybrid=False,
+    mtp_n=1,
+)
+
+TARGET_100_150M_BITNET_CONFIG = ModelConfig(
+    d_model=384,
+    n_layer=44,
+    n_head=6,
+    vocab_size=16384,
+    max_seq_len=1024,
+    use_bitnet=True,
+    use_mamba_hybrid=False,
+    mtp_n=4,
+)

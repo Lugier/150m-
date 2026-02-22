@@ -1,0 +1,43 @@
+# Post-Training: StepCoder curriculum, SFT trajectories, Trajectory Distillation
+# Optional: CodeRL+ (execution trajectories, semantics-match reward)
+
+teacher:
+  name: Qwen2.5-Coder-7B  # or StarCoder2-7B
+  repo: Qwen/Qwen2.5-Coder-7B-Instruct
+  device: cuda
+
+curriculum:
+  # StepCoder-style: CCCS (Completion Curriculum), FGO (Focused Gradient on executed segments)
+  stages:
+    - name: short_functions
+      docstring_lines_max: 5
+      code_lines_max: 20
+      weight: 0.3
+    - name: medium_functions
+      docstring_lines_max: 15
+      code_lines_max: 50
+      weight: 0.4
+    - name: complex_tasks
+      code_lines_max: 150
+      weight: 0.3
+  fgo: true  # only optimize executed segments
+
+sft:
+  max_samples: 50000
+  only_tests_green: true
+  trajectory_format: "problem -> solution_1 -> tests -> fix_1 -> ..."
+
+distillation:
+  trajectory_distillation: true
+  reward_filter: all_tests_green
+  student_seq_len: 1024
+
+coderl_plus:
+  enabled: false
+  reward: semantics_match_plus_pass_fail
+  variable_level_trajectories: true
+  # VeRL/RLVR adapter optional
+
+eval:
+  repair_success_rate: true
+  num_repair_attempts: 3

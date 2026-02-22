@@ -1,0 +1,73 @@
+# Plan Abschn. 3: Drei klar getrennte Pretrain-Stages (IMU-1-Style)
+# Stage 1 = The Stack v2 + Stack-Edu moderat; Stage 2 = Stack-Edu stark + CODA/CodeDenoise;
+# Stage 3 = Docstring→Code→Tests, Execution-Filter (phi-1-Style)
+
+stages:
+  stage1:
+    name: breit_okay
+    description: "The Stack v2 + Stack-Edu, moderat gefiltert"
+    filters:
+      min_chars: 100
+      max_chars: 100000
+      license_allow: []
+      near_dedup: true
+      dedup_threshold: 0.95
+  stage2:
+    name: sauber_edukativ
+    description: "Stack-Edu stark + Tests + DS-1000-ähnlich; CODA, CodeDenoise"
+    filters:
+      min_chars: 100
+      max_chars: 100000
+      near_dedup: true
+      dedup_threshold: 0.98
+      classifier_quality: false
+  stage3:
+    name: curriculum_instruktion
+    description: "Docstring→Code→Tests, Execution-Filter"
+    filters:
+      min_chars: 50
+      max_chars: 50000
+      near_dedup: true
+      execution_filter: true
+
+# 1. Pipeline Definitions for the 3-Stage approach (RegMix / Mischungen)
+data_pipeline:
+  stage_1_mix:
+    sources:
+      - name: "the-stack-v2-train-smol-ids"
+        weight: 0.4
+      - name: "the-stack-edu"
+        weight: 0.6
+    filters:
+      max_length: 32000
+      near_dedup: true
+      
+  # Stage 2: Cleaned Stack-Edu + DS-1000 styles (Heavily Filtered)
+  stage_2_mix:
+    sources:
+      - name: "the-stack-edu-filtered"
+        weight: 0.8
+      - name: "quality_tests"
+        weight: 0.2
+    filters:
+      max_length: 16000
+      near_dedup: true
+      run_code_denoise: true
+      
+  # Stage 3: High-Quality Synthetic (Docstring -> Code -> Test)
+  stage_3_mix:
+    sources:
+      - name: "synthetic_phi1_style"
+        weight: 1.0
+    filters:
+      execution_filter: "all_tests_green"
+
+# 2. RegMix Search Configuration
+regmix:
+  proxy_model_params: 10000000 # 10M proxy model
+  target_mixtures: 50
+  
+# 3. CodeDenoise / CODA Parameters
+adversarial:
+  coda_mutation_rate: 0.05      # 5% of tokens
+  denoise_ast_verify: true      # Uses AST parsing to verify syntax matches docstrings

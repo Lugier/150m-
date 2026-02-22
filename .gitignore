@@ -1,0 +1,43 @@
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Checkpoints and outputs
+checkpoints/
+smoke_checkpoints/
+*.pt
+*.ckpt
+!**/model/vocab/
+
+# Local config overrides (optional)
+testing_smoke_config.yaml
+.env
+.env.local
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large or generated data (uncomment if you don't want to track processed data)
+# data/processed/*.jsonl
+# data/tokenizer/
+
+# Logs
+*.log
+logs/
