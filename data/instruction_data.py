@@ -1,13 +1,15 @@
 """
 Evol-Instruct logic and Teacher API wrappers for generating synthetic 
 instruction tuning data for the Code-LLM.
+SelfCodeAlign-style: extract concepts from code, multi-sample, sandbox filter (only test-green pairs).
 """
 
+import ast
 import json
 import os
 import requests
 import random
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable, Tuple
 
 # Example endpoint for a local Ollama instance running Qwen2.5-Coder or DeepSeek
 # Change to OpenAI or other providers if needed.
@@ -70,3 +72,70 @@ def generate_teacher_response(instruction: str, system_prompt: str = "You are a 
     ]
     response = call_teacher_api(messages)
     return response.strip() if response else ""
+
+
+# ---- SelfCodeAlign-style: concepts from code, sandbox filter ----
+
+def extract_concepts_from_code(code: str) -> List[Dict[str, str]]:
+    """
+    Extract coding concepts from a code snippet (e.g. function/class names, docstrings)
+    to form new instructions. Returns list of {"instruction": str, "snippet": str}.
+    """
+    out: List[Dict[str, str]] = []
+    try:
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                doc = ast.get_docstring(node) or ""
+                name = node.name
+                if name.startswith("_"):
+                    continue
+                instruction = f"Write a Python function `{name}`."
+                if doc:
+                    instruction = f"Implement: {doc.strip()[:200]}"
+                out.append({"instruction": instruction, "snippet": code})
+                break
+            if isinstance(node, ast.ClassDef):
+                doc = ast.get_docstring(node) or ""
+                name = node.name
+                instruction = f"Write a Python class `{name}`."
+                if doc:
+                    instruction = f"Implement class: {doc.strip()[:200]}"
+                out.append({"instruction": instruction, "snippet": code})
+                break
+    except SyntaxError:
+        pass
+    if not out:
+        out.append({"instruction": "Reimplement the following logic.", "snippet": code})
+    return out
+
+
+def generate_teacher_response_multi(
+    instruction: str,
+    num_samples: int = 3,
+    system_prompt: str = "You are a helpful coding assistant.",
+) -> List[str]:
+    """Generate multiple teacher responses for the same instruction (SelfCodeAlign multi-sample)."""
+    results: List[str] = []
+    for _ in range(num_samples):
+        r = generate_teacher_response(instruction, system_prompt)
+        if r and r not in results:
+            results.append(r)
+    return results
+
+
+def filter_selfcodealign_green(
+    candidates: List[str],
+    tests: List[str],
+    run_tests_fn: Callable[[str, List[str]], Tuple[bool, str]],
+) -> List[str]:
+    """Return only candidates that pass all tests in sandbox (SelfCodeAlign: only test-green pairs)."""
+    green = []
+    for code in candidates:
+        try:
+            passed, _ = run_tests_fn(code, tests)
+            if passed:
+                green.append(code)
+        except Exception:
+            pass
+    return green

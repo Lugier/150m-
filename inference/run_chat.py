@@ -20,23 +20,25 @@ from model.leam import LEAMGrammarConstrainer
 def load_generator(checkpoint_path: str, device: torch.device):
     ckpt_path = Path(checkpoint_path)
     if ckpt_path.is_dir():
-        # Fallbacks for sft/rl or standard checkpoints
         for name in ["final_rl.pt", "final_sft.pt", "final.pt"]:
             if (ckpt_path / name).exists():
                 ckpt_path = ckpt_path / name
                 break
-                
+
     print(f"Loading checkpoint: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location="cpu")
-    train_cfg = ckpt.get("config", {})
-
-    m = train_cfg.get("model", {})
+    train_cfg = ckpt.get("config")
+    if not train_cfg:
+        raise ValueError("Checkpoint must contain 'config' (no fallback config).")
+    m = train_cfg.get("model")
+    if not m:
+        raise ValueError("Checkpoint config must contain 'model' (no fallback config).")
     model_cfg = ModelConfig(
-        d_model=m.get("d_model", 384),
-        n_layer=m.get("n_layer", 44),
-        n_head=m.get("n_head", 6),
-        vocab_size=m.get("vocab_size", 16384),
-        max_seq_len=m.get("max_seq_len", 1024),
+        d_model=m["d_model"],
+        n_layer=m["n_layer"],
+        n_head=m["n_head"],
+        vocab_size=m["vocab_size"],
+        max_seq_len=m["max_seq_len"],
         use_bitnet=m.get("use_bitnet", False),
         use_mamba_hybrid=m.get("use_mamba_hybrid", False),
         use_blt=m.get("use_blt", False),

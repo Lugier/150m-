@@ -134,7 +134,9 @@ class CodeDataLoader:
         if self.shuffle:
             rng = random.Random(self.seed)
             rng.shuffle(chunks)
-        pad_id = getattr(self.tokenizer, "pad_token_id", None) or getattr(self.tokenizer, "eos_token_id", 0) or 0
+        pad_id = getattr(self.tokenizer, "pad_token_id", None) or getattr(self.tokenizer, "eos_token_id", None)
+        if pad_id is None:
+            raise ValueError("Tokenizer must define pad_token_id or eos_token_id for pretraining padding (no fallback).")
         for i in range(0, len(chunks), self.batch_size):
             batch_chunks = chunks[i : i + self.batch_size]
             max_len = max(len(c) for c in batch_chunks)

@@ -35,9 +35,15 @@ class RMSNorm(nn.Module):
         return self.weight * normed
 
 
-def _linear(in_features: int, out_features: int, bias: bool, use_bitnet: bool) -> nn.Module:
+def _linear(
+    in_features: int,
+    out_features: int,
+    bias: bool,
+    use_bitnet: bool,
+    use_median_scaling: bool = False,
+) -> nn.Module:
     if use_bitnet:
-        return BitLinear(in_features, out_features, bias=bias)
+        return BitLinear(in_features, out_features, bias=bias, use_median_scaling=use_median_scaling)
     return nn.Linear(in_features, out_features, bias=bias)
 
 
@@ -53,12 +59,15 @@ class Attention(nn.Module):
         self.qk_norm = config.qk_norm
         self.use_value_residual = config.use_value_residual
         self.use_per_head_gating = config.use_per_head_gating
+        self.use_moa = getattr(config, "use_moa", False)
+        self.moa_patterns = getattr(config, "moa_patterns", None) or ["window_512", "global_8", "dilated_2"]
         use_bit = config.use_bitnet
+        use_median = getattr(config, "use_bitnet_median_scaling", False)
 
-        self.q_proj = _linear(config.d_model, self.n_head * self.head_dim, bias=False, use_bitnet=use_bit)
-        self.k_proj = _linear(config.d_model, self.n_head * self.head_dim, bias=False, use_bitnet=use_bit)
-        self.v_proj = _linear(config.d_model, self.n_head * self.head_dim, bias=False, use_bitnet=use_bit)
-        self.o_proj = _linear(self.n_head * self.head_dim, config.d_model, bias=False, use_bitnet=use_bit)
+        self.q_proj = _linear(config.d_model, self.n_head * self.head_dim, bias=False, use_bitnet=use_bit, use_median_scaling=use_median)
+        self.k_proj = _linear(config.d_model, self.n_head * self.head_dim, bias=False, use_bitnet=use_bit, use_median_scaling=use_median)
+        self.v_proj = _linear(config.d_model, self.n_head * self.head_dim, bias=False, use_bitnet=use_bit, use_median_scaling=use_median)
+        self.o_proj = _linear(self.n_head * self.head_dim, config.d_model, bias=False, use_bitnet=use_bit, use_median_scaling=use_median)
         self.attn_drop = nn.Dropout(config.attn_dropout)
         self.resid_drop = nn.Dropout(config.resid_dropout)
 
@@ -98,6 +107,9 @@ class Attention(nn.Module):
         att = (q @ k.transpose(-2, -1)) * self.scale
         if attention_mask is not None:
             att = att.masked_fill(attention_mask == 0, float("-inf"))
+        if self.use_moa and T > 0:
+            from .moa import apply_moa_mask
+            att = apply_moa_mask(att, T, self.n_head, self.moa_patterns)
         att = F.softmax(att, dim=-1)
         att = self.attn_drop(att)
 
@@ -118,8 +130,9 @@ class MLP(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         use_bit = config.use_bitnet
-        self.fc1 = _linear(config.d_model, config.intermediate_size, bias=False, use_bitnet=use_bit)
-        self.fc2 = _linear(config.intermediate_size, config.d_model, bias=False, use_bitnet=use_bit)
+        use_median = getattr(config, "use_bitnet_median_scaling", False)
+        self.fc1 = _linear(config.d_model, config.intermediate_size, bias=False, use_bitnet=use_bit, use_median_scaling=use_median)
+        self.fc2 = _linear(config.intermediate_size, config.d_model, bias=False, use_bitnet=use_bit, use_median_scaling=use_median)
         self.act = nn.GELU()
         self.drop = nn.Dropout(config.resid_dropout)
 

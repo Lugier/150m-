@@ -16,8 +16,8 @@ from .config import ModelConfig
 
 class MambaBlockStub(nn.Module):
     """
-    Stub when mamba_ssm is not installed. Replace with real Mamba-2 block when available.
-    Fallback: linear projection to preserve shape.
+    Stub wenn mamba_ssm nicht installiert ist. Shape-erhaltende lineare Projektion
+    (kein Konfig-Dummy: Abhängigkeit von mamba_ssm-Paket).
     """
 
     def __init__(self, d_model: int) -> None:

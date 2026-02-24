@@ -23,6 +23,7 @@ class ModelConfig:
 
     # Architecture (Plan §2: Giant-Killer – alle Säulen konfigurierbar)
     use_bitnet: bool = False   # BitLinear b1.58
+    use_bitnet_median_scaling: bool = False  # Beta = median(|W|) for small models (Plan §2)
     use_mamba_hybrid: bool = False  # 43% Mamba, 7% Attn, 50% MLP
     use_blt: bool = False       # Byte Latent Transformer: byte input, 256 vocab head
     use_leam: bool = False      # LEAM++ grammar constrainer in Inferenz (run_chat/run_torch)
@@ -31,6 +32,8 @@ class ModelConfig:
     mlp_ratio: float = 0.50
     use_masa: bool = False
     use_mohd: bool = False
+    use_moa: bool = False  # MoA: Mixture of Sparse Attention (arXiv 2406.14909), extends effective context
+    moa_patterns: list[str] | None = None  # e.g. ["window_512", "global_8", "dilated_2"]; cycled over heads
 
     # L-MTP (Leap Multi-Token Prediction)
     mtp_n: int = 1  # 1 = next-token only; 2-4 = multi-token

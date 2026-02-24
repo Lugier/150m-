@@ -13,9 +13,8 @@ def zeropower_via_newtonschulz5(G, steps=5, eps=1e-7):
     assert len(G.shape) == 2
     a, b, c = (3.4445, -4.7750, 2.0315)
     
-    # We execute Newton-Schulz optimally in bfloat16 to avoid precision issues
-    # and to exploit tensor cores.
-    # Fallback to float32 on devices that don't support bfloat16.
+    # Newton-Schulz in bfloat16 für Tensor Cores; auf Geräten ohne BF16-Support (z. B. MPS)
+    # wird float32 verwendet (geräteabhängig, kein Konfig-Dummy).
     dtype = torch.bfloat16 if G.device.type != "mps" and torch.cuda.is_bf16_supported() else torch.float32
     X = G.to(dtype)
     

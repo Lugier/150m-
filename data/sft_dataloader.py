@@ -9,13 +9,12 @@ class SFTDataset(torch.utils.data.IterableDataset):
     """
     Streaming dataset for JSONL-based chat histories.
     """
-    def __init__(self, data_path: str, tokenizer, max_seq_len: int = 1024, pad_token_id: int = 0):
+    def __init__(self, data_path: str, tokenizer, max_seq_len: int, pad_token_id: int, eos_token_id: int):
         self.data_path = Path(data_path)
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
         self.pad_token_id = pad_token_id
-        # Für Truncation-Fix: EOS-ID aus Tokenizer (Fallback 2 = typisch für BPE)
-        self.eos_token_id = getattr(tokenizer, "eos_token_id", 2)
+        self.eos_token_id = eos_token_id
         
     def __iter__(self):
         if not self.data_path.exists():
@@ -70,7 +69,14 @@ class SFTDataLoader:
         jsonl_path = Path(instruction_data_path) if instruction_data_path else Path(data_dir) / "instruction_sft.jsonl"
         if not jsonl_path.exists():
             raise FileNotFoundError(f"Instruction SFT data not found: {jsonl_path}. Run python data/generate_instruction_data.py --output {jsonl_path}.")
-        self.dataset = SFTDataset(jsonl_path, self.tokenizer, max_seq_len=seq_len, pad_token_id=0)
+        # Special-Token-IDs ausschließlich aus Tokenizer (kein Fallback/Dummy).
+        _pad = getattr(self.tokenizer, "pad_token_id", None) or getattr(self.tokenizer, "eos_token_id", None)
+        _eos = getattr(self.tokenizer, "eos_token_id", None)
+        if _pad is None:
+            raise ValueError("Tokenizer must define pad_token_id or eos_token_id for SFT.")
+        if _eos is None:
+            raise ValueError("Tokenizer must define eos_token_id for SFT truncation EOS fix.")
+        self.dataset = SFTDataset(jsonl_path, self.tokenizer, max_seq_len=seq_len, pad_token_id=_pad, eos_token_id=_eos)
         self.loader = torch.utils.data.DataLoader(
             self.dataset,
             batch_size=self.batch_size,

@@ -20,6 +20,8 @@ def main():
     parser.add_argument("--max_tokens", type=int, default=128)
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--device", type=str, default=None, help="Override: cuda, mps, cpu (Plan §8)")
+    parser.add_argument("--draft-checkpoint", type=str, default=None, help="Path to smaller draft model for speculative decoding (1.5–6.5× faster)")
+    parser.add_argument("--speculative-k", type=int, default=4, help="Number of draft tokens per verify step")
     args = parser.parse_args()
 
     if args.device:
@@ -82,29 +84,53 @@ def main():
 
     input_ids = torch.tensor([encode(args.prompt)], dtype=torch.long, device=device)
 
-    print("Generating...")
-    with torch.no_grad():
-        for _ in range(args.max_tokens):
-            if input_ids.size(1) > model_cfg.max_seq_len:
-                input_ids = input_ids[:, -model_cfg.max_seq_len:]
-                
-            logits = model(input_ids)["logits"]
-            next_token_logits = logits[0, -1, :].clone()
-            if leam_constrainer is not None:
-                # LEAM: constrain_logits(sequence_ids, logits) vor Sampling.
-                next_token_logits = leam_constrainer.constrain_logits(
-                    input_ids[0].tolist(), next_token_logits.unsqueeze(0)
-                )[0]
+    draft_model = None
+    if args.draft_checkpoint:
+        ckpt_draft = torch.load(Path(args.draft_checkpoint), map_location="cpu")
+        m_d = ckpt_draft.get("config", {}).get("model", {})
+        draft_cfg = ModelConfig(
+            d_model=m_d.get("d_model", 256),
+            n_layer=m_d.get("n_layer", 12),
+            n_head=m_d.get("n_head", 4),
+            vocab_size=m_d.get("vocab_size", model_cfg.vocab_size),
+            max_seq_len=m_d.get("max_seq_len", model_cfg.max_seq_len),
+        )
+        draft_model = CodeGPTLMHeadModel(draft_cfg)
+        draft_model.load_state_dict(ckpt_draft["model"], strict=False)
+        draft_model.to(device)
+        draft_model.eval()
 
-            if args.temperature == 0:
-                next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
-            else:
-                probs = torch.softmax(next_token_logits / args.temperature, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-                
-            input_ids = torch.cat([input_ids, next_token.unsqueeze(0)], dim=1)
+    if draft_model is not None:
+        from inference.speculative import speculative_decode
+        _, generated_text = speculative_decode(
+            model, tokenizer, input_ids,
+            max_new_tokens=args.max_tokens,
+            k=args.speculative_k,
+            temperature=args.temperature,
+            draft_model=draft_model,
+            decode_fn=lambda ids: decode(ids),
+        )
+        print("Generating (speculative)...")
+    else:
+        print("Generating...")
+        with torch.no_grad():
+            for _ in range(args.max_tokens):
+                if input_ids.size(1) > model_cfg.max_seq_len:
+                    input_ids = input_ids[:, -model_cfg.max_seq_len:]
+                logits = model(input_ids)["logits"]
+                next_token_logits = logits[0, -1, :].clone()
+                if leam_constrainer is not None:
+                    next_token_logits = leam_constrainer.constrain_logits(
+                        input_ids[0].tolist(), next_token_logits.unsqueeze(0)
+                    )[0]
+                if args.temperature == 0:
+                    next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+                else:
+                    probs = torch.softmax(next_token_logits / args.temperature, dim=-1)
+                    next_token = torch.multinomial(probs, num_samples=1)
+                input_ids = torch.cat([input_ids, next_token.unsqueeze(0)], dim=1)
+        generated_text = decode(input_ids[0].tolist())
 
-    generated_text = decode(input_ids[0].tolist())
     print("\n--- Output ---")
     print(generated_text)
     print("--------------")

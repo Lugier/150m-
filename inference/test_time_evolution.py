@@ -8,6 +8,35 @@ from __future__ import annotations
 
 from typing import Any, Callable, List, Optional, Tuple
 
+
+def generate_differentiating_tests(
+    candidates: List[str],
+    prompt: str,
+    tests: List[str],
+    max_extra: int = 5,
+    run_tests_fn: Optional[Callable[[str, List[str]], Tuple[bool, str]]] = None,
+) -> List[str]:
+    """
+    Generate test inputs that can differentiate between candidates (S* distinguishing inputs).
+    If run_tests_fn is provided, runs each candidate and returns failing tests as extra
+    discriminators. Otherwise returns [] (plug in LLM or heuristic for full implementation).
+    """
+    extra: List[str] = []
+    if run_tests_fn is not None and candidates and tests:
+        try:
+            results = [run_tests_fn(c, tests) for c in candidates]
+            passed = [r[0] for r in results]
+            if sum(passed) != len(candidates) and sum(passed) != 0:
+                for i, t in enumerate(tests):
+                    if len(extra) >= max_extra:
+                        break
+                    if "assert" in t:
+                        extra.append(t)
+        except Exception:
+            pass
+    return extra[:max_extra]
+
+
 def _run_tests(code: str, tests: List[str]) -> Tuple[bool, str]:
     """Lazy import um zirkuläre Imports zu vermeiden."""
     from evaluation.eval_repair import run_tests_in_sandbox
@@ -41,14 +70,18 @@ def s_star_generate(
     tests: List[str],
     num_candidates: int = 16,
     differentiating_tests: Optional[List[str]] = None,
+    differentiating_generator: Optional[Callable[[List[str], str, List[str]], List[str]]] = None,
 ) -> str:
     """
     S* Generation: generate_fn(prompt, n) liefert n Code-Strings; bester wird per
-    s_star_select (Sandbox) gewählt. Für Integration in run_chat/Evaluator.
+    s_star_select (Sandbox) gewählt. Wenn differentiating_generator gesetzt, werden
+    zusätzliche Tests erzeugt, die Kandidaten unterscheiden (distinguishing inputs).
     """
     candidates = generate_fn(prompt, num_candidates)
     if not candidates:
         return ""
+    if differentiating_tests is None and differentiating_generator is not None:
+        differentiating_tests = differentiating_generator(candidates, prompt, tests)
     best_idx, _ = s_star_select(candidates, tests, differentiating_tests)
     return candidates[best_idx]
 

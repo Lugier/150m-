@@ -39,8 +39,9 @@ def generate_candidates(model, tokenizer, prompt: str, num_candidates: int, max_
     input_tensor = torch.tensor([input_ids] * num_candidates, dtype=torch.long, device=_device)
     generated = input_tensor.clone()
 
-    eos_token_id = getattr(model.config, "eos_token_id", 2)
-    pad_token_id = getattr(model.config, "pad_token_id", 0)
+    # Special-Token-IDs ausschließlich aus ModelConfig (kein Fallback).
+    eos_token_id = model.config.eos_token_id
+    pad_token_id = model.config.pad_token_id
     # Maske: welche Kandidaten schon EOS produziert haben (dürfen nicht weiter generieren)
     finished = torch.zeros(num_candidates, dtype=torch.bool, device=_device)
 
@@ -93,10 +94,13 @@ def grpo_train_step(
     policy_model, ref_model, optimizer, tokenizer, prompt: str, tests: list,
     num_candidates: int = 4, beta: float = 0.04, device: str | torch.device = "cuda",
     reference_code: str | None = None, coderl_plus_weight: float = 0.5,
+    skip_zero_advantage: bool = True,
 ):
     """
-    Ein GRPO-Schritt: K Kandidaten generieren, mit Execution-Reward (+ optional CodeRL+ Semantics) bewerten.
-    reference_code aus RL-JSONL (reference_solution/target_code) → Reward = (1-w)*exec + w*semantics_match.
+    Ein GRPO-Schritt: K Kandidaten generieren (2-GRPO: num_candidates=2, ~98% von 16-GRPO bei 12.5% Rollouts).
+    reference_code aus RL-JSONL → Reward = (1-w)*exec + w*semantics_match.
+    AERO (arXiv:2602.14338): skip_zero_advantage = True → bei gleichen Rewards (Varianz ≈ 0) kein Backward.
+    Ohne Fallback: Es wird ausdrücklich KEIN Optimizer-Step durchgeführt, wenn kein Lernsignal (zero-advantage).
     """
     policy_model.train()
 
@@ -126,11 +130,15 @@ def grpo_train_step(
         
     rewards_tensor = torch.tensor(rewards, dtype=torch.float32, device=device)
     
-    # Compute Advantage (Reward - Mean Base)
+    # Compute Advantage (Reward - Mean Base); 2-GRPO works with num_candidates=2.
     if num_candidates > 1:
         mean_reward = rewards_tensor.mean()
         std_reward = rewards_tensor.std() + 1e-8
         advantages = (rewards_tensor - mean_reward) / std_reward
+        # AERO (Adaptive Efficient Rollout Optimization, arXiv:2602.14338): Zero-Advantage vermeiden.
+        # Kein Fallback: Bei Varianz ≈ 0 keinen Backward/Step ausführen (kein Lernsignal).
+        if skip_zero_advantage and std_reward.item() < 1e-6:
+            return 0.0, rewards_tensor.mean().item()
     else:
         advantages = torch.zeros_like(rewards_tensor)
         
@@ -209,6 +217,8 @@ def run_rl_training(
     rl_data_path: Optional[str] = None,
     tokenizer_path: Optional[str] = None,
     device_override: Optional[str] = None,
+    num_candidates: int = 4,
+    skip_zero_advantage: bool = True,
 ):
     if not rl_data_path:
         raise ValueError("RL training requires --rl-data with path to instruction_sft.jsonl or RL JSONL.")
@@ -282,11 +292,13 @@ def run_rl_training(
             tests = data["tests"]
             reference_code = data.get("reference_solution", "") or ""
             # CodeRL+: bei reference_code wird Semantics-Match mit 0.5 Gewicht zugemischt.
+            # num_candidates=2 → 2-GRPO (~98% von 16-GRPO, >70% kürzere Trainingszeit).
             loss, reward = grpo_train_step(
                 policy_model, ref_model, optimizer, tokenizer, prompt, tests,
-                num_candidates=4, device=device,
+                num_candidates=num_candidates, device=device,
                 reference_code=reference_code if reference_code else None,
                 coderl_plus_weight=0.5,
+                skip_zero_advantage=skip_zero_advantage,
             )
             global_step += 1
             
@@ -309,6 +321,8 @@ if __name__ == "__main__":
     p.add_argument("--rl-data", type=str, required=True, help="Path to RL prompts JSONL (e.g. data/processed/instruction_sft.jsonl)")
     p.add_argument("--tokenizer", type=str, default=None, help="Tokenizer path (default: data/tokenizer)")
     p.add_argument("--device", type=str, default=None, help="Override device (cuda, mps, cpu); default auto")
+    p.add_argument("--num-candidates", type=int, default=4, help="GRPO group size (2 = 2-GRPO, ~98%% of 16-GRPO with >70%% less time)")
+    p.add_argument("--no-skip-zero-advantage", action="store_true", help="Disable AERO zero-advantage skip (perform step even when all rewards equal)")
     args = p.parse_args()
     run_rl_training(
         sft_checkpoint=args.sft_checkpoint,
@@ -317,4 +331,6 @@ if __name__ == "__main__":
         rl_data_path=args.rl_data,
         tokenizer_path=args.tokenizer,
         device_override=args.device,
+        num_candidates=args.num_candidates,
+        skip_zero_advantage=not args.no_skip_zero_advantage,
     )
