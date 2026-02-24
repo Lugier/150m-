@@ -9,6 +9,7 @@ import os
 import sys
 import torch
 import torch.nn.functional as F
+from contextlib import nullcontext
 from copy import deepcopy
 from pathlib import Path
 from math import log
@@ -26,37 +27,42 @@ from data.chat_format import format_chat_history, IM_START, ASSISTANT_PROMPT
 from data.dataloader import load_tokenizer_for_training
 from training.device_utils import resolve_device
 
-def generate_candidates(model, tokenizer, prompt: str, num_candidates: int, max_new_tokens: int = 128, device: str = "cuda"):
+def generate_candidates(model, tokenizer, prompt: str, num_candidates: int, max_new_tokens: int = 128, device: str | torch.device = "cuda"):
     """
-    Generates N candidates for a given prompt using multinomial sampling to ensure diversity 
-    for the GRPO advantage calculation.
+    Generates N candidates for GRPO (multinomial sampling for diversity).
+    EOS-Maskierung: fertige Sequenzen bekommen PAD und generieren nicht weiter,
+    damit keine "Müll"-Logprobs in die Advantage-Berechnung fließen.
     """
     model.eval()
+    _device = device if isinstance(device, torch.device) else torch.device(device)
     input_ids = tokenizer.encode(prompt, add_special_tokens=False)
-    input_tensor = torch.tensor([input_ids] * num_candidates, dtype=torch.long, device=device)
-    
+    input_tensor = torch.tensor([input_ids] * num_candidates, dtype=torch.long, device=_device)
     generated = input_tensor.clone()
-    
+
+    eos_token_id = getattr(model.config, "eos_token_id", 2)
+    pad_token_id = getattr(model.config, "pad_token_id", 0)
+    # Maske: welche Kandidaten schon EOS produziert haben (dürfen nicht weiter generieren)
+    finished = torch.zeros(num_candidates, dtype=torch.bool, device=_device)
+
+    use_autocast = _device.type == "cuda"
     with torch.no_grad():
         for _ in range(max_new_tokens):
             if generated.size(1) > model.config.max_seq_len:
                 break
-                
-            logits = model(generated)["logits"]
+            # Mixed Precision auf CUDA: BF16 beschleunigt die autoregressive Schleife deutlich (z. B. RTX 3090)
+            ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if use_autocast else nullcontext()
+            with ctx:
+                logits = model(generated)["logits"]
             next_token_logits = logits[:, -1, :]
-            
-            # Apply a high temperature to force diverse candidates
             probs = torch.softmax(next_token_logits / 0.8, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
-            
-            generated = torch.cat([generated, next_token], dim=1)
-            
-            # Very basic early stopping heuristic if all candidates produced EOS
-            # (assuming EOS is 2)
-            if (next_token == 2).all():
+            next_token = torch.multinomial(probs, num_samples=1).squeeze(-1)
+            # Fertige Sequenzen: PAD statt weiterem Token, damit Länge einheitlich bleibt
+            next_token = torch.where(finished, torch.tensor(pad_token_id, device=_device), next_token)
+            generated = torch.cat([generated, next_token.unsqueeze(1)], dim=1)
+            finished |= (next_token == eos_token_id)
+            if finished.all():
                 break
-                
-    # Return just the generated portion
+
     prompt_len = input_tensor.size(1)
     return generated[:, prompt_len:]
 
@@ -108,7 +114,12 @@ def grpo_train_step(
         exec_score = compute_execution_reward(text, tests)
         if reference_code is not None and reference_code.strip():
             semantics_score = min(1.0, compute_semantics_reward(text, reference_code))
-            score = (1.0 - coderl_plus_weight) * exec_score + coderl_plus_weight * semantics_score
+            # Verifiable RL / Anti-Reward-Hacking: Semantik-Belohnung nur wenn Code läuft (exec_score > 0).
+            # Sonst könnte das Modell lernen, nur ähnliche Variablennamen zu produzieren und trotzdem Reward zu bekommen.
+            if exec_score > 0.0:
+                score = (1.0 - coderl_plus_weight) * exec_score + coderl_plus_weight * semantics_score
+            else:
+                score = exec_score
         else:
             score = exec_score
         rewards.append(score)
@@ -228,12 +239,15 @@ def run_rl_training(
     policy_model.load_state_dict(ckpt["model"])
     policy_model.to(device)
     
-    # Frozen Reference Model
+    # Referenzmodell für GRPO: eval + requires_grad=False.
+    # Ohne requires_grad=False speichert PyTorch im Forward trotzdem Autograd-Graphen → VRAM/CPU-Overhead, ggf. OOM.
     ref_model = CodeGPTLMHeadModel(model_cfg)
     ref_model.load_state_dict(ckpt["model"])
     ref_model.to(device)
     ref_model.eval()
-    
+    for param in ref_model.parameters():
+        param.requires_grad = False
+
     # Simple Opt for RL (smaller LR)
     optimizer = torch.optim.AdamW(policy_model.parameters(), lr=1e-6)
     

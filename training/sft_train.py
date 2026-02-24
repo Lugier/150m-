@@ -87,15 +87,32 @@ def run_sft_training(
     print(f"Loading Pre-Trained Checkpoint from {checkpoint}")
     ckpt = torch.load(_ROOT / checkpoint, map_location="cpu")
     
-    # We might need to resize embeddings if we added special tokens for ChatML
+    # Vocab-Resize: Beim SFT oft größeres Vocab für ChatML-Special-Tokens.
+    # Mit load_state_dict(..., strict=False) würden embed/lm_head wegen Shape-Mismatch
+    # übersprungen und blieben zufällig → Pre-Training ginge verloren. Daher manuelles
+    # Kopieren der alten Zeilen in die neuen Matrizen, Rest strikt laden.
     pt_vocab_size = ckpt["model"]["embed.weight"].shape[0]
     if pt_vocab_size != model_cfg.vocab_size:
         print(f"Resizing vocab from {pt_vocab_size} to {model_cfg.vocab_size} to accommodate ChatML tokens.")
-        # Only instantiate, load, then resize
         model = CodeGPTLMHeadModel(model_cfg)
-        # Load matched shapes first
-        missing, unexpected = model.load_state_dict(ckpt["model"], strict=False)
-        print(f"Missing keys: {len(missing)}, Unexpected keys: {len(unexpected)}")
+        state_dict = {k: v.clone() for k, v in ckpt["model"].items()}
+        # Alte Embedding-Zeilen in neue Matrix kopieren (Pre-Training bleibt erhalten)
+        old_embed = state_dict["embed.weight"]
+        new_embed = model.state_dict()["embed.weight"].clone()
+        new_embed[:pt_vocab_size, :] = old_embed
+        state_dict["embed.weight"] = new_embed
+        # lm_head nicht getied → gleiche Resize-Logik
+        if "lm_head.weight" in state_dict:
+            old_head = state_dict["lm_head.weight"]
+            new_head = model.state_dict()["lm_head.weight"].clone()
+            new_head[:pt_vocab_size, :] = old_head
+            state_dict["lm_head.weight"] = new_head
+        # SFT mit mtp_n>1, Checkpoint ohne mtp_heads → fehlende Keys erlauben (strict=False)
+        has_mtp_in_ckpt = any(k.startswith("mtp_heads.") for k in ckpt["model"])
+        load_strict = not (model_cfg.mtp_n > 1 and not has_mtp_in_ckpt)
+        missing, unexpected = model.load_state_dict(state_dict, strict=load_strict)
+        if not load_strict:
+            print(f"Missing keys (e.g. mtp_heads): {len(missing)}, Unexpected: {len(unexpected)}")
     else:
         model = CodeGPTLMHeadModel(model_cfg)
         model.load_state_dict(ckpt["model"])

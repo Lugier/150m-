@@ -14,6 +14,8 @@ class SFTDataset(torch.utils.data.IterableDataset):
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
         self.pad_token_id = pad_token_id
+        # Für Truncation-Fix: EOS-ID aus Tokenizer (Fallback 2 = typisch für BPE)
+        self.eos_token_id = getattr(tokenizer, "eos_token_id", 2)
         
     def __iter__(self):
         if not self.data_path.exists():
@@ -34,6 +36,11 @@ class SFTDataset(torch.utils.data.IterableDataset):
                     if len(input_ids) > self.max_seq_len:
                         input_ids = input_ids[:self.max_seq_len]
                         labels = labels[:self.max_seq_len]
+                        # SOTA-Fix: Nach hartem Abschneiden fehlt sonst <|eos|>/<|im_end|>.
+                        # Ohne EOS am Ende lernt das Modell, mitten im Code abzubrechen ("Babbler");
+                        # mit EOS am letzten Position lernt es immer ein klares Stopp-Signal.
+                        input_ids[-1] = self.eos_token_id
+                        labels[-1] = self.eos_token_id
                     elif len(input_ids) < self.max_seq_len:
                         # Pad with PAD tokens, and -100 for labels
                         pad_len = self.max_seq_len - len(input_ids)

@@ -1,21 +1,25 @@
 # SFT für 150M Giant-Killer (Instruction SFT + RL). Optimiert für RTX 3090 (24 GB).
-# gradient_checkpointing + bf16; batch 6 × seq 1024, grad_accum 6 → effektiv 36. OOM → batch 4.
+# gradient_checkpointing + bf16; batch 6 × seq 2048, grad_accum 6 → effektiv 36. OOM → batch 4.
 device: cuda
 model:
   d_model: 384
   n_layer: 44
   n_head: 6
-  vocab_size: 16390 # Increased for ChatML if added as special tokens
-  max_seq_len: 1024
+  # Vocab-Größe: Vielfaches von 8 (besser 64) für volle Tensor-Core-Auslastung (Ampere/Ada).
+  vocab_size: 16448
+  # Längerer Kontext: System + User + Code + Tests überschreiten 1024 schnell; ohne EOS am Ende lernt das Modell Abbruch.
+  max_seq_len: 2048
   use_bitnet: false
-  use_mamba_hybrid: false
+  # Mamba-Hybrid (Jamba/Zamba2): weniger KV-Cache, linearer Kontext; bei kleinen Modellen oft besser als reiner Transformer.
+  use_mamba_hybrid: true
   use_blt: false
   use_leam: false
-  mtp_n: 1 # Standard next token prediction for SFT
+  # Multi-Token Prediction (L-MTP): Modell sagt nächste 2 Tokens vorher → Regularisierung für Code-Syntax (Einrückung, Klammern).
+  mtp_n: 2
 
 training:
   batch_size: 6          # RTX 3090 24GB; OOM → 4
-  seq_len: 1024
+  seq_len: 2048
   gradient_accumulation_steps: 6  # effektiver Batch 36
   max_steps: 10000
   eval_every: 500
