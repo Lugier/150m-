@@ -68,9 +68,15 @@ def ema_update(
         ema.mul_(decay).add_(p.data, alpha=1 - decay)
 
 
-def ema_copy_to_model(ema_params: list[torch.Tensor], model_params: list[torch.Tensor]) -> None:
+def ema_copy_to_model(ema_params: list[torch.Tensor], model_params: list[torch.Tensor], is_bitnet: bool = False) -> None:
     for ema, p in zip(ema_params, model_params):
-        p.data.copy_(ema)
+        if is_bitnet and p.dim() >= 2:
+            beta = ema.abs().mean().clamp(min=1e-8)
+            w_norm = ema / beta
+            w_quant = torch.clamp(torch.round(w_norm), -1.0, 1.0) * beta
+            p.data.copy_(w_quant)
+        else:
+            p.data.copy_(ema)
 
 
 def train_step(
@@ -300,7 +306,7 @@ def run_training(
             print(f"Saved {ckpt_path}")
 
     if ema_enabled and ema_params:
-        ema_copy_to_model(ema_params, [p for p in model.parameters() if p.requires_grad])
+        ema_copy_to_model(ema_params, [p for p in model.parameters() if p.requires_grad], is_bitnet=model_cfg.use_bitnet)
     final_path = Path(checkpoint_dir) / "final.pt"
     torch.save({"model": model.state_dict(), "step": global_step, "config": train_cfg}, final_path)
     try:

@@ -134,11 +134,20 @@ def grpo_train_step(
     if num_candidates > 1:
         mean_reward = rewards_tensor.mean()
         std_reward = rewards_tensor.std() + 1e-8
-        advantages = (rewards_tensor - mean_reward) / std_reward
-        # AERO (Adaptive Efficient Rollout Optimization, arXiv:2602.14338): Zero-Advantage vermeiden.
-        # Kein Fallback: Bei Varianz ≈ 0 keinen Backward/Step ausführen (kein Lernsignal).
-        if skip_zero_advantage and std_reward.item() < 1e-6:
-            return 0.0, rewards_tensor.mean().item()
+        
+        if std_reward.item() < 1e-6:
+            if mean_reward.item() < 0.01:
+                # AERO-Starvation Fix (Error 8, 17): All failed. Block deadlock by penalizing all.
+                advantages = torch.full_like(rewards_tensor, -1.0)
+            elif skip_zero_advantage and mean_reward.item() > 0.99:
+                # All succeeded perfectly, safe to skip to save compute.
+                # To prevent gradient sync issues, we optionally do a dummy backward pass, 
+                # but returning 0 is fine if not using DDP.
+                return 0.0, mean_reward.item()
+            else:
+                advantages = torch.zeros_like(rewards_tensor)
+        else:
+            advantages = (rewards_tensor - mean_reward) / std_reward
     else:
         advantages = torch.zeros_like(rewards_tensor)
         

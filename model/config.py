@@ -12,14 +12,15 @@ from dataclasses import dataclass
 class ModelConfig:
     """Single config for 100-150M target; IMU-1 / Deep-Thin compatible."""
 
-    # Size
-    d_model: int = 384
-    n_layer: int = 44
-    n_head: int = 6
+    # Size (Shallow-Wide target ~300M)
+    d_model: int = 1024
+    n_layer: int = 24
+    n_head: int = 16
+    n_kv_head: int | None = None
     head_dim: int | None = None  # default d_model // n_head
     intermediate_size: int | None = None  # default 4 * d_model (ffn)
     vocab_size: int = 16384
-    max_seq_len: int = 1024
+    max_seq_len: int = 4096
 
     # Architecture (Plan §2: Giant-Killer – alle Säulen konfigurierbar)
     use_bitnet: bool = False   # BitLinear b1.58
@@ -78,22 +79,22 @@ EARLY_ITERATION_CONFIG = ModelConfig(
 )
 
 TARGET_100_150M_CONFIG = ModelConfig(
-    d_model=384,
-    n_layer=44,
-    n_head=6,
+    d_model=1024,
+    n_layer=24,
+    n_head=16,
     vocab_size=16384,
-    max_seq_len=1024,
+    max_seq_len=4096,
     use_bitnet=False,
     use_mamba_hybrid=False,
     mtp_n=1,
 )
 
 TARGET_100_150M_BITNET_CONFIG = ModelConfig(
-    d_model=384,
-    n_layer=44,
-    n_head=6,
+    d_model=1024,
+    n_layer=24,
+    n_head=16,
     vocab_size=16384,
-    max_seq_len=1024,
+    max_seq_len=4096,
     use_bitnet=True,
     use_mamba_hybrid=False,
     mtp_n=4,

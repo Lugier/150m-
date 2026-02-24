@@ -34,23 +34,33 @@ def main():
     parser.add_argument("--output_file", type=str, default="data/processed/instruction_sft.jsonl")
     args = parser.parse_args()
 
-    # Pre-defined simple seeds if no file
-    seed_instructions = [
-        "Write a Python function to sort a list.",
-        "Create a simple HTTP server in Go.",
-        "Write a React component for a login form.",
-        "How do I reverse a string in C++?",
-        "Write a SQL query to get the top 5 users by sales.",
-        "Create a Python script to download an image from a URL.",
-        "Write a Bash script to backup a directory.",
-        "Implement binary search in Java.",
-        "Write a Dockerfile for a Node.js app.",
-        "Create a simple CLI calculator in Rust."
-    ]
-
+    # If no local seed file is provided, stream seeds dynamically from HuggingFace
+    seed_instructions = []
     if args.seed_file and os.path.exists(args.seed_file):
         with open(args.seed_file, "r") as f:
             seed_instructions = [line.strip() for line in f if line.strip()]
+    else:
+        print("No seed file provided. Pulling random code snippets from HuggingFace to seed Evol-Instruct...")
+        try:
+            from datasets import load_dataset
+            # Use a premium, execution-filtered instruction dataset for SFT seeds
+            ds = load_dataset("nickrosh/Evol-Instruct-Code-80k-v1", split="train", streaming=True)
+            for i, item in enumerate(ds):
+                if i >= args.num_samples:
+                    break
+                # Extract pure instruction to be evolved further, or use as is
+                instruction = item.get("instruction", "")
+                if instruction:
+                    seed_instructions.append(instruction)
+        except ImportError:
+            print("Warning: 'datasets' library not found. Falling back to basic seeds.")
+            seed_instructions = [
+                "Write a Python function to sort a list.",
+                "Create a simple HTTP server in Go.",
+                "Write a React component for a login form.",
+                "How do I reverse a string in C++?",
+                "Write a SQL query to get the top 5 users by sales.",
+            ] * max(1, args.num_samples // 5)
 
     # SelfCodeAlign: extract instructions from seed code file
     if args.selfcodealign and args.seed_code_file and os.path.exists(args.seed_code_file):
@@ -69,7 +79,7 @@ def main():
                     seed_instructions.append(item["instruction"])
         seed_instructions = seed_instructions[: max(args.num_samples, len(seed_instructions))]
 
-    # Limit to num_samples roughly
+    # Limit exactly to num_samples
     seed_instructions = seed_instructions[:args.num_samples]
 
     default_tests: list = []

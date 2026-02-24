@@ -30,44 +30,41 @@ stages:
       near_dedup: true
       execution_filter: true
 
-# 1. Pipeline Definitions for the 3-Stage approach (RegMix / Mischungen)
+# 1. Pipeline Definitions for the 3-Stage approach
 data_pipeline:
   stage_1_mix:
     sources:
-      - name: "the-stack-v2-train-smol-ids"
-        weight: 0.4
-      - name: "the-stack-edu"
-        weight: 0.6
+      - name: "bigcode/the-stack-v2-train-smol-ids"
+        weight: 0.3
+      - name: "bigcode/the-stack-edu"
+        weight: 0.7
     filters:
       max_length: 32000
       near_dedup: true
       
-  # Stage 2: Cleaned Stack-Edu + DS-1000 styles (Heavily Filtered)
+  # Stage 2: Cleaned Stack-Edu + High-Quality Instruct
   stage_2_mix:
     sources:
-      - name: "the-stack-edu-filtered"
-        weight: 0.8
-      - name: "quality_tests"
-        weight: 0.2
+      - name: "bigcode/the-stack-edu-filtered"
+        weight: 0.7
+      - name: "HuggingFaceH4/CodeAlpaca_20K"
+        weight: 0.3
     filters:
       max_length: 16000
       near_dedup: true
-      run_code_denoise: true
       
-  # Stage 3: High-Quality Synthetic (Docstring -> Code -> Test)
+  # Stage 3: Extreme Quality Execution-Verified & Contests
   stage_3_mix:
     sources:
-      - name: "synthetic_phi1_style"
-        weight: 1.0
+      - name: "deepmind/code_contests"
+        weight: 0.6
+      - name: "m-a-p/CodeFeedback-Filtered-Instruction"
+        weight: 0.4
     filters:
       execution_filter: "all_tests_green"
 
-# 2. RegMix Search Configuration
-regmix:
-  proxy_model_params: 10000000 # 10M proxy model
-  target_mixtures: 50
-  
-# 3. CodeDenoise / CODA Parameters
-adversarial:
-  coda_mutation_rate: 0.05      # 5% of tokens
-  denoise_ast_verify: true      # Uses AST parsing to verify syntax matches docstrings
+# 2. Static Stage Mix overrides (No RegMIX proxy, Plan §3.2)
+static_mix_schedule:
+  stage1: "stage_1_mix"
+  stage2: "stage_2_mix"
+  stage3: "stage_3_mix"

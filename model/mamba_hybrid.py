@@ -28,15 +28,21 @@ class MambaBlockStub(nn.Module):
         return x + self.proj(x), None
 
 class Mamba2Wrapper(nn.Module):
-    """Wrap Mamba2 to ignore attention-specific kwargs like attention_mask/past_kv."""
+    """Wrap Mamba2 to ignore attention-specific kwargs like attention_mask/past_kv.
+    Isolates Mamba C++ kernel in bfloat16 to avoid Autocast/BitNet precision crashes (Error 18).
+    Avoids native PyTorch gradient checkpointing crashes (Error 24)."""
     def __init__(self, d_model: int):
         super().__init__()
         from mamba_ssm import Mamba2
         self.mamba = Mamba2(d_model=d_model, d_state=128, d_conv=4, expand=2)
         
     def forward(self, x: torch.Tensor, *args, **kwargs) -> tuple[torch.Tensor, None]:
-        # returns output and a minimal cache for API compatibility
-        return self.mamba(x), None
+        # Error 23: Mamba has no QK-Norm native. We don't artificially inject it.
+        # Error 18, 24: Isolate Mamba C++ kernel in bfloat16 and protect from external AMP conflicts.
+        device_type = x.device.type if x.device.type in ["cuda", "cpu"] else "cpu"
+        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+            out = self.mamba(x.to(torch.bfloat16))
+        return out, None
 
 
 def make_mamba_hybrid_layer(config: ModelConfig, layer_idx: int) -> nn.Module:

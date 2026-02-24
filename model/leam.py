@@ -50,8 +50,12 @@ class LEAMGrammarConstrainer:
                 ast.parse(speculative_code + "\npass")
             except SyntaxError as e:
                 # If the error is early in the file, or involves structural violations,
-                # we mask the logit.
-                if "invalid syntax" in str(e) and "EOF" not in str(e):
+                # we mask the logit. Error 10/30: Don't penalize incomplete string literals natively.
+                err_msg = str(e).lower()
+                if "invalid syntax" in err_msg and "eof" not in err_msg and "unterminated string" not in err_msg:
                     logits[0, idx.item()] = -1e9
+            except Exception:
+                # Catch generic parsing edge cases gracefully
+                pass
 
         return logits

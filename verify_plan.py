@@ -83,7 +83,7 @@ try:
     from model.config import ModelConfig, TARGET_100_150M_CONFIG
     c = ModelConfig(d_model=64, n_layer=2, n_head=2, vocab_size=256)
     assert c.num_parameters_approx > 0
-    assert TARGET_100_150M_CONFIG.n_layer == 44
+    assert TARGET_100_150M_CONFIG.n_layer == 24
     ok("config")
 except Exception as e:
     fail("model.config", e)
@@ -208,8 +208,8 @@ except Exception as e:
     fail("run_mlx", e)
 
 try:
-    from inference.test_time_evolution import s_star_generate, ab_mcts_step, daj_judge, pot_update
-    cands = s_star_generate(None, "sort list", num_candidates=2)
+    from inference.test_time_evolution import s_star_generate, ab_mcts_score, daj_judge, pot_update_hook
+    cands = s_star_generate(lambda p, n: ["res1", "res2"][:n], "sort list", tests=[], num_candidates=2)
     assert len(cands) == 2
     scores = daj_judge(cands, "sort")
     assert len(scores) == 2

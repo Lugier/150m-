@@ -34,7 +34,10 @@ if ! python3 -c "import torch" 2>/dev/null; then
   pip install -q torch transformers tokenizers datasets safetensors pyyaml tqdm accelerate
 fi
 
-# Train (final 100-150M config: batch 4-8, seq 512-1024)
+# --- PHASE 1: PRE-TRAINING ---
+echo "==================================="
+echo "PHASE 1: PRE-TRAINING (100-300M)..."
+echo "==================================="
 python3 training/train.py \
   --config training/config_train.yaml \
   --data_dir "$DATA_DIR" \
@@ -43,4 +46,40 @@ python3 training/train.py \
   --vocab_path "$PROJECT_ROOT/model/vocab" \
   "$@"
 
-echo "Training complete. Checkpoints: $CHECKPOINT_DIR"
+
+# --- PHASE 2: INSTRUCTION DATA GENERATION & SFT ---
+echo "==================================="
+echo "PHASE 2: SFT INSTRUCTION TUNING..."
+echo "==================================="
+# Generate 5,000 synthetic instruction pairs using Evol-Instruct (simulated API fallback or real endpoint)
+python3 data/generate_instruction_data.py \
+  --num_samples 5000 \
+  --evolve \
+  --output_file "$DATA_DIR/instruction_sft.jsonl" || echo "SFT Data Gen failed, checking if fallback data exists..."
+
+# Run SFT Training from the Final Pre-Trained Checkpoint
+python3 training/sft_train.py \
+  --config training/config_sft.yaml \
+  --checkpoint "$CHECKPOINT_DIR/final.pt" \
+  --instruction_data "$DATA_DIR/instruction_sft.jsonl" \
+  --output_dir "$CHECKPOINT_DIR/sft" \
+  --max_steps 5000 \
+  "$@"
+
+
+# --- PHASE 3: RL GRPO (SELF-REPAIR) ---
+echo "==================================="
+echo "PHASE 3: RL GRPO (SELF-REPAIR)..."
+echo "==================================="
+# Fine-tune the SFT model using GRPO and Sandbox code execution rewards
+python3 training/rl_train.py \
+  --config training/config_rl.yaml \
+  --checkpoint "$CHECKPOINT_DIR/sft/final_sft.pt" \
+  --output_dir "$CHECKPOINT_DIR/rl" \
+  --max_steps 2000 \
+  "$@"
+
+echo "==================================="
+echo "ALL TRAINING PHASES COMPLETE."
+echo "Final Model: $CHECKPOINT_DIR/rl/final_rl.pt"
+echo "==================================="

@@ -9,19 +9,20 @@ import torch.nn as nn
 from typing import Optional
 
 class BytePatchEncoder(nn.Module):
-    """Byte-ID (0–255) → d_model; in gpt.py als self.embed bei use_blt."""
-    def __init__(self, vocab_byte: int = 256, d_model: int = 384):
+    """Byte-ID (0–vocab) → d_model. Fixed patches for Mamba compatibility (Error 2)."""
+    def __init__(self, vocab_byte: int = 300, d_model: int = 384):
         super().__init__()
         self.embed = nn.Embedding(vocab_byte, d_model)
         self.ngram_proj = nn.Linear(d_model, d_model)
 
     def forward(self, byte_ids: torch.Tensor) -> torch.Tensor:
-        x = self.embed(byte_ids.clamp(0, 255))
+        # Error 12: Support ChatML special tokens > 255
+        x = self.embed(byte_ids)
         return self.ngram_proj(x)
 
 class BytePatchDecoder(nn.Module):
-    """Latent → 256 Byte-Logits; in gpt.py als self.lm_head bei use_blt."""
-    def __init__(self, d_model: int = 384, vocab_byte: int = 256):
+    """Latent → vocab Byte-Logits."""
+    def __init__(self, d_model: int = 384, vocab_byte: int = 300):
         super().__init__()
         self.decode_proj = nn.Linear(d_model, vocab_byte)
         
@@ -30,30 +31,20 @@ class BytePatchDecoder(nn.Module):
 
 class BLTWrapper(nn.Module):
     """
-    BLT Structure: 
-    Byte stream -> Dynamic patches (Entropy) -> Latent Transformer -> Loc Decoder.
+    BLT Structure with Fixed Patches.
     """
-    def __init__(self, d_model: int = 384, latent_transformer: Optional[nn.Module] = None):
+    def __init__(self, d_model: int = 384, latent_transformer: Optional[nn.Module] = None, vocab_byte: int = 300):
         super().__init__()
-        self.encoder = BytePatchEncoder(vocab_byte=256, d_model=d_model)
-        # Binds to the actual Mamba-Hybrid layers or falls back to identity projection
+        self.encoder = BytePatchEncoder(vocab_byte=vocab_byte, d_model=d_model)
         self.latent_transformer_stub = latent_transformer if latent_transformer is not None else nn.Identity()
-        self.decoder = BytePatchDecoder(d_model=d_model, vocab_byte=256)
-        self.entropy_threshold = 1.5
-
-    def compute_entropy_patches(self, byte_logits: torch.Tensor) -> torch.Tensor:
-        """Calculates next-byte entropy to identify cross-patch boundaries."""
-        probs = torch.softmax(byte_logits, dim=-1)
-        entropy = -(probs * torch.log(probs + 1e-9)).sum(dim=-1)
-        # Returns boolean mask where true indicates a new patch boundary
-        return entropy > self.entropy_threshold
+        self.decoder = BytePatchDecoder(d_model=d_model, vocab_byte=vocab_byte)
 
     def forward(self, byte_input: torch.Tensor) -> torch.Tensor:
         encoded = self.encoder(byte_input)
         
-        # Real logic for boundary detection and latent packing would require dynamic shape 
-        # realignment. Here we perform a continuous pass simulating homogeneous latent 
-        # lengths for matrix compatibility, while maintaining the structural flow.
+        # Error 2: Mamba kernels require continuous, even timesteps. 
+        # Variable entropy patches break Mamba-2 hardware utilization and semantics.
+        # We enforce fixed 1:1 tokens-to-latents mapping here, relying on the tokenizer to pre-pack bytes.
         latent = self.latent_transformer_stub(encoded)
         
         return self.decoder(latent)

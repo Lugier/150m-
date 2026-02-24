@@ -266,14 +266,23 @@ class CodeGPTLMHeadModel(nn.Module):
             loss = F.cross_entropy(shift_logits, shift_labels, ignore_index=-100)
 
             if self.mtp_n > 1 and mtp_labels is not None:
+                mtp_loss_total = 0.0
+                valid_heads = 0
                 for offset, head in enumerate(self.mtp_heads, start=1):
                     if offset >= len(mtp_labels):
                         break
                     logits_t = head(x)
                     shift_t = logits_t[..., :-1, :].contiguous().view(-1, self._vocab_size_head)
                     labels_t = mtp_labels[offset][..., 1:].contiguous().view(-1)
-                    loss = loss + F.cross_entropy(shift_t, labels_t, ignore_index=-100)
-                loss = loss / max(1, min(len(mtp_labels), self.mtp_n))
+                    
+                    # Error 22/31: If the entire shifted label tensor is exactly -100 (pure padding), 
+                    # cross_entropy returns NaN. We must mask this safely.
+                    if (labels_t != -100).any():
+                        mtp_loss_total += F.cross_entropy(shift_t, labels_t, ignore_index=-100)
+                        valid_heads += 1
+                
+                if valid_heads > 0:
+                    loss = loss + (mtp_loss_total / valid_heads)
 
         out: dict[str, torch.Tensor] = {"logits": logits}
         if loss is not None:

@@ -64,7 +64,10 @@ class BitLinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         w = self._quantize_weight()
-        out = nn.functional.linear(x, w, self.bias)
+        # Disable autocast for the integer multiplication (Error 25)
+        device_type = x.device.type if x.device.type in ["cuda", "cpu"] else "cpu"
+        with torch.autocast(device_type=device_type, enabled=False):
+            out = nn.functional.linear(x.to(w.dtype), w, self.bias)
         return out * self.layer_scale
 
 

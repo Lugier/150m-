@@ -234,7 +234,7 @@ def run_sft_training(
             print(f"Saved {ckpt_path}")
 
     if ema_enabled and ema_params:
-        ema_copy_to_model(ema_params, [p for p in model.parameters() if p.requires_grad])
+        ema_copy_to_model(ema_params, [p for p in model.parameters() if p.requires_grad], is_bitnet=model_cfg.use_bitnet)
         
     final_path = Path(output_dir) / "final_sft.pt"
     torch.save({"model": model.state_dict(), "step": global_step, "config": train_cfg}, final_path)
